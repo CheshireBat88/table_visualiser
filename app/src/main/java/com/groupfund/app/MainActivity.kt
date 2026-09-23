@@ -40,7 +40,7 @@ class MainActivity : ComponentActivity() {
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
-    /** SpreadsheetId из deep-link `groupfund://invite/<id>`, если такой был. */
+    /** SpreadsheetId из deep-link `groupfund://invite/<id>` или `https://cheshirebat88.github.io/invite/<id>`. */
     private val inviteId = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -83,8 +83,19 @@ class MainActivity : ComponentActivity() {
 
     private fun parseInviteUri(data: Uri?): String? {
         if (data == null) return null
-        if (data.scheme != "groupfund" || data.host != "invite") return null
-        return data.lastPathSegment?.takeIf { it.isNotBlank() }
+        return when (data.scheme) {
+            "groupfund" ->
+                if (data.host == "invite") data.lastPathSegment
+                else null
+            "https" ->
+                if (data.host != "cheshirebat88.github.io") null
+                else data.path
+                    ?.takeIf { it.startsWith("/invite/") }
+                    ?.removePrefix("/invite/")
+                    ?.trimEnd('/')
+                    ?.takeIf { it.isNotBlank() }
+            else -> null
+        }
     }
 
     private fun requestNotificationPermissionIfNeeded() {

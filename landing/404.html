@@ -18,12 +18,18 @@
   <p><button id="open">Открыть в приложении</button></p>
   <p class="hint">Если приложение не установлено или кнопка не работает — скачайте его и попробуйте снова, либо установите из Google Play.</p>
   <script>
-    var m = location.pathname.match(/^\/invite\/([^/]+)\/?$/);
-    var id = m ? decodeURIComponent(m[1]) : '';
-    var appUrl = id ? 'groupfund://invite/' + id : null;
-    function tryOpen() { if (appUrl) { window.location = appUrl; } }
-    window.addEventListener('load', function () { if (appUrl) { setTimeout(tryOpen, 400); } });
-    document.getElementById('open').addEventListener('click', tryOpen);
+    if (location.pathname.indexOf('/invite/') !== 0) {
+      document.querySelector('h2').textContent = 'Страница не найдена';
+      document.querySelector('p').textContent = 'Вернитесь к приглашению, либо проверьте ссылку.';
+      document.getElementById('open').style.display = 'none';
+    } else {
+      var m = location.pathname.match(/^\/invite\/([^/]+)\/?$/);
+      var id = m ? decodeURIComponent(m[1]) : '';
+      var appUrl = id ? 'groupfund://invite/' + id : null;
+      function tryOpen() { if (appUrl) { window.location = appUrl; } }
+      window.addEventListener('load', function () { if (appUrl) { setTimeout(tryOpen, 400); } });
+      document.getElementById('open').addEventListener('click', tryOpen);
+    }
   </script>
 </body>
 </html>

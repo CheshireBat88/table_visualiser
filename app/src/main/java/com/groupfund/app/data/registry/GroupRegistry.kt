@@ -65,6 +65,25 @@ class GroupRegistry(private val context: Context) {
         }
     }
 
+    /**
+     * Создатель переименовал сам файл на Drive: настоящее имя таблицы меняется,
+     * локальное переопределение (localTitle) убираем, чтобы отображалось новое имя.
+     */
+    suspend fun renameGroup(id: String, newTitle: String, sheetRenamed: Boolean) {
+        val name = newTitle.trim().takeIf { it.isNotBlank() } ?: return
+        context.groupDataStore.edit { prefs ->
+            val current = prefs[groupsKey]?.let { deserialize(it) } ?: return@edit
+            prefs[groupsKey] = serialize(
+                current.map { entry ->
+                    if (entry.id == id) {
+                        if (sheetRenamed) entry.copy(title = name, localTitle = null)
+                        else entry.copy(localTitle = name)
+                    } else entry
+                },
+            )
+        }
+    }
+
     /** Помечает/снимает пометку «группа недоступна» (удалена или ограничен доступ). */
     suspend fun setUnavailable(id: String, unavailable: Boolean) {
         context.groupDataStore.edit { prefs ->

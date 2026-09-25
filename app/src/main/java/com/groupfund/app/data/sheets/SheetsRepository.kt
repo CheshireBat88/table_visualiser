@@ -277,6 +277,15 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         Unit
     }
 
+    /** Переименовывает таблицу на Drive (для создателя): новое имя видят все участники. */
+    suspend fun renameSpreadsheet(spreadsheetId: String, newTitle: String): Result<Unit> =
+        withToken { _, drive, token ->
+            val name = newTitle.trim()
+            if (name.isEmpty()) error("Укажите название")
+            drive.renameFile("Bearer $token", spreadsheetId, DriveFileRename(name))
+            Unit
+        }
+
     /**
      * Готовит запись группы для наблюдателя по ID таблицы: проверяет,
      * что это настоящая таблица группы, открывает доступ «по ссылке»

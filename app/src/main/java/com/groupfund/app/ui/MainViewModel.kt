@@ -93,10 +93,29 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch { registry.removeGroup(entryId) }
     }
 
-    /** Переименовывает группу локально («как отображается у пользователя»). */
+    /**
+     * Переименовывает группу. Создатель переименовывает сам файл на Drive
+     * (новое имя увидят все участники); при неудаче — локальное переименование.
+     * Участник/наблюдатель — только локально («как отображается у пользователя»).
+     */
     fun renameGroup(entryId: String, newTitle: String) {
         if (newTitle.isBlank()) return
-        viewModelScope.launch { registry.renameGroup(entryId, newTitle) }
+        viewModelScope.launch {
+            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            if (entry.role != "creator") {
+                registry.renameGroup(entryId, newTitle)
+                return@launch
+            }
+            repository.renameSpreadsheet(entry.spreadsheetId, newTitle).fold(
+                onSuccess = { registry.renameGroup(entryId, newTitle, sheetRenamed = true) },
+                onFailure = {
+                    registry.renameGroup(entryId, newTitle)
+                    _uiState.update { st ->
+                        st.copy(error = "Таблица не переименована: ${it.message ?: "ошибка"}")
+                    }
+                },
+            )
+        }
     }
 
     /**

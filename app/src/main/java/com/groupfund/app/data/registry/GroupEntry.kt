@@ -2,7 +2,7 @@ package com.groupfund.app.data.registry
 
 /**
  * Запись о группе в локальном реестре пользователя.
- * role: "creator" | "member".
+ * role: "creator" | "observer" | "member".
  */
 data class GroupEntry(
     val id: String,

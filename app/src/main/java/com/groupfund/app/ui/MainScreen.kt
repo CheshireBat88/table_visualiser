@@ -301,7 +301,11 @@ private fun RenameGroupDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text(
-                    "Название изменится только у вас в списке. Таблица на Диске останется прежней.",
+                    if (entry.role == "creator") {
+                        "Название изменится в самой таблице — его увидят все участники."
+                    } else {
+                        "Название изменится только у вас в списке. Таблица на Диске останется прежней."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                 )
                 OutlinedTextField(

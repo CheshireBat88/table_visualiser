@@ -113,6 +113,14 @@ interface DriveApiService {
         @Path("fileId") fileId: String,
         @Body body: DriveFilePatch,
     )
+
+    /** Переименовывает файл — новое название таблицы видят все, у кого есть доступ. */
+    @PATCH("drive/v3/files/{fileId}")
+    suspend fun renameFile(
+        @Header("Authorization") authorization: String,
+        @Path("fileId") fileId: String,
+        @Body body: DriveFileRename,
+    )
 }
 
 // ---------- DTO: создание таблицы ----------
@@ -241,6 +249,10 @@ data class DriveFile(
 
 data class DriveFilePatch(
     @SerializedName("appProperties") val appProperties: Map<String, String>,
+)
+
+data class DriveFileRename(
+    @SerializedName("name") val name: String,
 )
 
 // ---------- DTO: структурные изменения и форматирование ----------

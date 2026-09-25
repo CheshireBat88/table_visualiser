@@ -13,6 +13,7 @@ import com.groupfund.app.notifications.BirthdayCheck
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -43,6 +44,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** spreadsheetId, ожидающий подключения (deep-link `groupfund://invite/<id>`). */
     private var pendingInviteId: String? = null
 
+    /** Не выполняем проверку доступности групп дважды параллельно. */
+    private var availabilityCheckRunning = false
+
     init {
         refreshSignedIn()
         viewModelScope.launch {
@@ -50,6 +54,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 _uiState.update { it.copy(groups = groups) }
             }
         }
+        refreshGroupsAvailability()
     }
 
     fun availableAccounts(): List<String> =
@@ -62,6 +67,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         auth.rememberSignIn(email)
         refreshSignedIn()
+        refreshGroupsAvailability()
         // Проверяем ДР сразу после входа, не дожидаясь перезапуска приложения.
         viewModelScope.launch {
             runCatching { BirthdayCheck.run(getApplication()) }
@@ -85,6 +91,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Удаляет группу из списка устройства, не трогая таблицу на Диске. */
     fun leaveGroup(entryId: String) {
         viewModelScope.launch { registry.removeGroup(entryId) }
+    }
+
+    /** Переименовывает группу локально («как отображается у пользователя»). */
+    fun renameGroup(entryId: String, newTitle: String) {
+        if (newTitle.isBlank()) return
+        viewModelScope.launch { registry.renameGroup(entryId, newTitle) }
+    }
+
+    /**
+     * Проверяет доступность всех групп текущему аккаунту и помечает недоступные
+     * (таблица удалена или создатель ограничил доступ). Запускается при старте
+     * приложения и после смены аккаунта.
+     */
+    fun refreshGroupsAvailability() {
+        if (auth.storedEmail() == null || availabilityCheckRunning) return
+        availabilityCheckRunning = true
+        viewModelScope.launch {
+            try {
+                val current = registry.groups.first()
+                current.forEach { entry ->
+                    val accessible = repository.checkAccessible(entry.spreadsheetId).getOrNull()
+                    if (accessible != null) registry.setUnavailable(entry.id, !accessible)
+                }
+            } finally {
+                availabilityCheckRunning = false
+            }
+        }
     }
 
     fun consumeConsentIntent() {

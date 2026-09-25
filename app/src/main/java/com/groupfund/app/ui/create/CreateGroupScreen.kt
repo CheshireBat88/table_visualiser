@@ -143,6 +143,15 @@ fun CreateGroupScreen(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (state.duplicateTitle) {
+                    Text(
+                        "Такая группа уже есть в вашем списке. " +
+                            "Если создать её же, рядом добавится пометка (1).",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
             }
             item {
                 OutlinedTextField(

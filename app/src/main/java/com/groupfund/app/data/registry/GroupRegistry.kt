@@ -52,6 +52,29 @@ class GroupRegistry(private val context: Context) {
     suspend fun findBySpreadsheetId(spreadsheetId: String): GroupEntry? =
         groups.first().firstOrNull { it.spreadsheetId == spreadsheetId }
 
+    /** Переименовывает группу локально («как отображается у пользователя»), не трогая таблицу. */
+    suspend fun renameGroup(id: String, newTitle: String) {
+        context.groupDataStore.edit { prefs ->
+            val current = prefs[groupsKey]?.let { deserialize(it) } ?: return@edit
+            prefs[groupsKey] = serialize(
+                current.map { entry ->
+                    if (entry.id == id) entry.copy(localTitle = newTitle.trim().takeIf { it.isNotBlank() })
+                    else entry
+                },
+            )
+        }
+    }
+
+    /** Помечает/снимает пометку «группа недоступна» (удалена или ограничен доступ). */
+    suspend fun setUnavailable(id: String, unavailable: Boolean) {
+        context.groupDataStore.edit { prefs ->
+            val current = prefs[groupsKey]?.let { deserialize(it) } ?: return@edit
+            prefs[groupsKey] = serialize(
+                current.map { entry -> if (entry.id == id) entry.copy(unavailable = unavailable) else entry },
+            )
+        }
+    }
+
     // ---------- Выбор наблюдателя в группе ----------
 
     /**

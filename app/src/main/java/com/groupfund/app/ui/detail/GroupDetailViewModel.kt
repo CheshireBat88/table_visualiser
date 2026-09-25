@@ -12,6 +12,7 @@ import com.groupfund.app.data.registry.GroupRegistry
 import com.groupfund.app.data.sheets.GroupData
 import com.groupfund.app.data.sheets.GroupSummary
 import com.groupfund.app.data.sheets.MemberData
+import com.groupfund.app.data.sheets.NotFoundException
 import com.groupfund.app.data.sheets.PaymentInput
 import com.groupfund.app.data.sheets.SheetsRepository
 import com.groupfund.app.data.sheets.SummaryCalculator
@@ -63,7 +64,7 @@ class GroupDetailViewModel(
             entry = registry.groupById(groupId)
             _uiState.update {
                 it.copy(
-                    title = entry?.title,
+                    title = entry?.localTitle ?: entry?.title,
                     url = entry?.spreadsheetUrl,
                     spreadsheetId = entry?.spreadsheetId,
                     role = entry?.role ?: "member",
@@ -389,15 +390,22 @@ class GroupDetailViewModel(
         _uiState.update { st ->
             result.fold(
                 onSuccess = { g ->
+                    entry.let { registry.setUnavailable(it.id, false) }
                     st.copy(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
+                    if (e is NotFoundException) {
+                        entry.let { registry.setUnavailable(it.id, true) }
+                        st.copy(
+                            loading = false,
+                            error = "Группа удалена или создатель ограничил к ней доступ",
+                        )
+                    } else if (e is OAuthConsentRequiredException) {
                         st.copy(consentIntent = e.intent)
                     } else {
                         st.copy(
@@ -410,6 +418,9 @@ class GroupDetailViewModel(
         }
     }
 
+    /** Отображаемое название: локальное переименование пользователя поверх названия таблицы. */
+    private fun displayTitle(sheetTitle: String): String = entry?.localTitle ?: sheetTitle
+
     private suspend fun doAddPayment(member: String, amount: Double, comment: String) {
         val entry = entry ?: return
         val result = repository.appendPayment(entry.spreadsheetId, member, amount, comment)
@@ -420,7 +431,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -444,7 +455,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -469,7 +480,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -498,7 +509,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -522,7 +533,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -551,7 +562,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -575,7 +586,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -599,7 +610,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -623,7 +634,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -647,7 +658,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -671,7 +682,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -695,7 +706,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -719,7 +730,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -743,7 +754,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -767,7 +778,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -791,7 +802,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -821,7 +832,7 @@ class GroupDetailViewModel(
                         loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->
@@ -845,7 +856,7 @@ class GroupDetailViewModel(
                         busy = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
-                        title = g.title,
+                        title = displayTitle(g.title),
                     )
                 },
                 onFailure = { e ->

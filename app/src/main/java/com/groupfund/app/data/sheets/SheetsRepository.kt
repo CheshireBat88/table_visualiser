@@ -25,6 +25,9 @@ data class PaymentInput(
     val comment: String = "",
 )
 
+/** Таблица не найдена: удалена или доступ к ней ограничен (HTTP 404 от Google). */
+class NotFoundException(message: String, cause: Throwable?) : Exception(message, cause)
+
 /**
  * Репозиторий поверх Sheets/Drive API. Внутри берёт актуальный OAuth-токен
  * из GoogleAuthManager и подставляет его в каждый запрос.
@@ -134,7 +137,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     }
 
     /** Собирает читаемый текст для UI/логов: код + эндпоинт + обрывок тела ответа. */
-    private fun illegal(e: HttpException): IllegalStateException {
+    private fun illegal(e: HttpException): Exception {
         val response = e.response()
         val method = response?.raw()?.request?.method ?: "?"
         val url = response?.raw()?.request?.url?.encodedPath ?: "?"
@@ -147,7 +150,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             "HTTP ${e.code()} $method $url\n$body"
         }
         Log.w("SheetsApi", message, e)
-        return IllegalStateException(message, e)
+        return if (e.code() == 404) NotFoundException(message, e) else IllegalStateException(message, e)
     }
 
     /**
@@ -246,6 +249,21 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     /** Читает все листы и собирает содержимое группы. */
     suspend fun loadGroup(spreadsheetId: String): Result<GroupData> = withToken { sheets, _, token ->
         readGroup(sheets, token, spreadsheetId)
+    }
+
+    /**
+     * Лёгкая проверка: доступна ли таблица текущему аккаунту (читает только метаданные).
+     * true — доступ есть; false — таблицы нет или доступ закрыт; failure — проверить не удалось
+     * (сеть/согласие), пометку менять не следует.
+     */
+    suspend fun checkAccessible(spreadsheetId: String): Result<Boolean> = withToken { sheets, _, token ->
+        try {
+            sheets.getSpreadsheetMeta("Bearer $token", spreadsheetId)
+            true
+        } catch (e: retrofit2.HttpException) {
+            if (e.code() == 401 || e.code() == 403) throw e // отдаём withToken: повторит со свежим токеном
+            false // 404 и прочие — доступа нет
+        }
     }
 
     /**

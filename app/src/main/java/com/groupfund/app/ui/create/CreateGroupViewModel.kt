@@ -13,6 +13,7 @@ import com.groupfund.app.data.sheets.SheetsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.YearMonth
@@ -36,6 +37,8 @@ data class CreateGroupUiState(
     val error: String? = null,
     val consentIntent: Intent? = null,
     val created: Boolean = false,
+    /** В списке пользователя уже есть группа с таким названием. */
+    val duplicateTitle: Boolean = false,
 )
 
 val MONTHS_IN_WINDOW = 13
@@ -56,7 +59,24 @@ class CreateGroupViewModel(app: Application) : AndroidViewModel(app) {
 
     private var lastDraft: GroupDraft? = null
 
-    fun onTitleChange(v: String) = _uiState.update { it.copy(title = v) }
+    /** Имена уже имеющихся групп (локальные и «настоящие», без учёта регистра). */
+    private var existingGroupNames: Set<String> = emptySet()
+
+    init {
+        viewModelScope.launch {
+            registry.groups
+                .map { list -> list.mapNotNull { (it.localTitle ?: it.title).trim().lowercase() }.toSet() }
+                .collect { existingGroupNames = it }
+        }
+    }
+
+    fun onTitleChange(v: String) = _uiState.update { st ->
+        val trimmed = v.trim()
+        st.copy(
+            title = v,
+            duplicateTitle = trimmed.isNotEmpty() && trimmed.lowercase() in existingGroupNames,
+        )
+    }
     fun onBaseChange(v: String) = _uiState.update { it.copy(baseAmount = v.filter { c -> c.isDigit() }) }
     fun onMemberInputChange(v: String) = _uiState.update { it.copy(memberInput = v) }
     fun onMemberBirthdaySet(millis: Long?) = _uiState.update { it.copy(memberBirthdayMillis = millis) }

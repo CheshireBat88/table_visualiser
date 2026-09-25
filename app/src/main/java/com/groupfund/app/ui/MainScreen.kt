@@ -2,11 +2,14 @@ package com.groupfund.app.ui
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,18 +17,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -50,12 +57,31 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.groupfund.app.BuildConfig
 import com.groupfund.app.R
 import com.groupfund.app.data.registry.GroupEntry
+
+/** Группа с уже «разведённым» по дублям отображаемым названием. */
+private data class DisplayGroup(val entry: GroupEntry, val label: String)
+
+/** К названию дубликата добавляет « (1)», « (2)» и т.д., первую копию не трогает. */
+private fun withUniqueLabels(groups: List<GroupEntry>): List<DisplayGroup> {
+    val base = { e: GroupEntry -> (e.localTitle ?: e.title).trim() }
+    val counts = groups.map(base).groupingBy { it }.eachCount()
+    val seen = mutableMapOf<String, Int>()
+    return groups.map { e ->
+        val name = base(e)
+        val idx = seen[name] ?: 0
+        seen[name] = idx + 1
+        val label = if ((counts[name] ?: 1) > 1 && idx > 0) "$name ($idx)" else name
+        DisplayGroup(e, label)
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -69,7 +95,10 @@ fun MainScreen(
 
     var showAccountDialog by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
+    var showInfoDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<GroupEntry?>(null) }
+    var pendingRename by remember { mutableStateOf<GroupEntry?>(null) }
+    var showUnavailableHint by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.inviteJoined) {
         state.inviteJoined?.let { id ->
@@ -139,7 +168,16 @@ fun MainScreen(
     }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.app_name)) },
+                actions = {
+                    IconButton(onClick = { showInfoDialog = true }) {
+                        Icon(Icons.Default.Info, "О приложении")
+                    }
+                },
+            )
+        },
         snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
             if (state.isSignedIn) {
@@ -166,6 +204,8 @@ fun MainScreen(
                     onSignInClick = openSignIn,
                     onOpenGroup = onOpenGroup,
                     onDeleteRequest = { pendingDelete = it },
+                    onRenameRequest = { pendingRename = it },
+                    onUnavailableClick = { showUnavailableHint = true },
                     onImportDrive = { showImportDialog = true },
                 )
             }
@@ -215,8 +255,127 @@ fun MainScreen(
                     },
                 )
             }
+
+            if (showUnavailableHint) {
+                AlertDialog(
+                    onDismissRequest = { showUnavailableHint = false },
+                    title = { Text("Группа недоступна") },
+                    text = { Text("Группа удалена или создатель ограничил к ней доступ.") },
+                    confirmButton = {
+                        TextButton(onClick = { showUnavailableHint = false }) {
+                            Text("Понятно")
+                        }
+                    },
+                )
+            }
+
+            val renameTarget = pendingRename
+            if (renameTarget != null) {
+                RenameGroupDialog(
+                    entry = renameTarget,
+                    onDismiss = { pendingRename = null },
+                    onRename = { newTitle ->
+                        viewModel.renameGroup(renameTarget.id, newTitle)
+                        pendingRename = null
+                    },
+                )
+            }
+
+            if (showInfoDialog) {
+                AboutDialog(onDismiss = { showInfoDialog = false })
+            }
         }
     }
+}
+
+@Composable
+private fun RenameGroupDialog(
+    entry: GroupEntry,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit,
+) {
+    var name by remember(entry.id) { mutableStateOf(entry.localTitle ?: entry.title) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Переименовать группу") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Название изменится только у вас в списке. Таблица на Диске останется прежней.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Название") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = name.isNotBlank(),
+                onClick = { onRename(name.trim()) },
+            ) {
+                Text("Сохранить")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
+            }
+        },
+    )
+}
+
+@Composable
+private fun AboutDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val releasesUrl = "https://github.com/CheshireBat88/table_visualiser/releases"
+    val email = "ch3shirsky@gmail.com"
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("О приложении") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("GroupFund", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "Версия ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    "Приложение ведёт учёт общих расходов в Google Таблицах.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Button(
+                    onClick = {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, Uri.parse(releasesUrl)),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Проверить обновления на GitHub")
+                }
+                TextButton(
+                    onClick = {
+                        context.startActivity(
+                            Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$email")),
+                        )
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Написать разработчику")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Закрыть")
+            }
+        },
+    )
 }
 
 @Composable
@@ -244,6 +403,8 @@ private fun GroupsContent(
     onSignInClick: () -> Unit,
     onOpenGroup: (String) -> Unit,
     onDeleteRequest: (GroupEntry) -> Unit,
+    onRenameRequest: (GroupEntry) -> Unit,
+    onUnavailableClick: () -> Unit,
     onImportDrive: () -> Unit,
 ) {
     Row(
@@ -300,11 +461,17 @@ private fun GroupsContent(
             }
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.groups, key = { it.id }) { entry ->
+            items(withUniqueLabels(state.groups), key = { it.entry.id }) { dg ->
                 GroupCard(
-                    entry,
-                    onClick = { onOpenGroup(entry.id) },
-                    onDelete = { onDeleteRequest(entry) },
+                    entry = dg.entry,
+                    label = dg.label,
+                    unavailable = dg.entry.unavailable,
+                    onClick = {
+                        if (dg.entry.unavailable) onUnavailableClick()
+                        else onOpenGroup(dg.entry.id)
+                    },
+                    onRename = { onRenameRequest(dg.entry) },
+                    onDelete = { onDeleteRequest(dg.entry) },
                 )
             }
         }
@@ -314,7 +481,10 @@ private fun GroupsContent(
 @Composable
 private fun GroupCard(
     entry: GroupEntry,
+    label: String,
+    unavailable: Boolean,
     onClick: () -> Unit,
+    onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
@@ -327,24 +497,67 @@ private fun GroupCard(
                     .weight(1f)
                     .padding(end = 4.dp),
             ) {
-                Text(entry.title, style = MaterialTheme.typography.titleSmall)
                 Text(
-                    entry.spreadsheetUrl,
-                    style = MaterialTheme.typography.bodySmall,
+                    label,
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (unavailable) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.onSurface,
+                    textDecoration = if (unavailable) TextDecoration.LineThrough else null,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Text(
-                    when (entry.role) {
-                        "creator" -> "Создатель"
-                        "observer" -> "Наблюдатель"
-                        else -> "Участник"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                )
+                if (unavailable) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Default.Warning,
+                            null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "Группа удалена или ограничен доступ",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                } else {
+                    Text(
+                        entry.spreadsheetUrl,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        when (entry.role) {
+                            "creator" -> "Создатель"
+                            "observer" -> "Наблюдатель"
+                            else -> "Участник"
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
             }
-            IconButton(onClick = onDelete) {
-                Icon(Icons.Default.Close, "Удалить группу")
+            var menuOpen by remember { mutableStateOf(false) }
+            Box {
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(Icons.Default.MoreVert, "Действия с группой")
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Переименовать") },
+                        onClick = {
+                            menuOpen = false
+                            onRename()
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Удалить") },
+                        onClick = {
+                            menuOpen = false
+                            onDelete()
+                        },
+                    )
+                }
             }
         }
     }

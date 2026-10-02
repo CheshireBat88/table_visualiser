@@ -100,11 +100,21 @@ fun MainScreen(
     var showImportDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
     var showAcceptDialog by remember { mutableStateOf(false) }
+    var acceptInitialLink by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<GroupEntry?>(null) }
     var pendingRename by remember { mutableStateOf<GroupEntry?>(null) }
     var finishTarget by remember { mutableStateOf<GroupEntry?>(null) }
     var removeRetiredTarget by remember { mutableStateOf<GroupEntry?>(null) }
     var showUnavailableHint by remember { mutableStateOf(false) }
+
+    // Пришли по ссылке передачи — открываем диалог «Принять» с подставленной ссылкой.
+    LaunchedEffect(state.pendingTransferUri) {
+        state.pendingTransferUri?.let { uri ->
+            acceptInitialLink = uri
+            showAcceptDialog = true
+            viewModel.consumePendingTransferUri()
+        }
+    }
 
     LaunchedEffect(state.inviteJoined) {
         state.inviteJoined?.let { id ->
@@ -184,7 +194,12 @@ fun MainScreen(
                 title = { Text(stringResource(R.string.app_name)) },
                 actions = {
                     if (state.isSignedIn) {
-                        IconButton(onClick = { showAcceptDialog = true }) {
+                        IconButton(
+                            onClick = {
+                                acceptInitialLink = null
+                                showAcceptDialog = true
+                            },
+                        ) {
                             Icon(Icons.Default.PersonAdd, "Принять передачу группы")
                         }
                     }
@@ -324,8 +339,12 @@ fun MainScreen(
 
             if (showAcceptDialog) {
                 AcceptTransferDialog(
+                    initialLink = acceptInitialLink,
                     busy = state.acceptBusy,
-                    onDismiss = { showAcceptDialog = false },
+                    onDismiss = {
+                        showAcceptDialog = false
+                        acceptInitialLink = null
+                    },
                     onAccept = viewModel::acceptTransfer,
                 )
             }
@@ -477,11 +496,12 @@ private fun FinishTransferDialog(
 
 @Composable
 private fun AcceptTransferDialog(
+    initialLink: String?,
     busy: Boolean,
     onDismiss: () -> Unit,
     onAccept: (String) -> Unit,
 ) {
-    var link by remember { mutableStateOf("") }
+    var link by remember { mutableStateOf(initialLink.orEmpty()) }
     AlertDialog(
         onDismissRequest = { if (!busy) onDismiss() },
         title = { Text("Принять передачу группы") },

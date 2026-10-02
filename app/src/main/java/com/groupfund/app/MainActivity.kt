@@ -43,10 +43,14 @@ class MainActivity : ComponentActivity() {
     /** SpreadsheetId из deep-link `groupfund://invite/<id>` или `https://cheshirebat88.github.io/invite/<id>`. */
     private val inviteId = mutableStateOf<String?>(null)
 
+    /** Ссылка передачи (`/transfer/<id>?code=…` в https-форме) из intent, если пришли по ней. */
+    private val transferUri = mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         inviteId.value = parseInviteUri(intent?.data)
+        transferUri.value = parseTransferUri(intent?.data)
         CrashLogger.install(this)
 
         BirthdayNotifier.schedule(this)
@@ -55,7 +59,10 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             GroupFundTheme {
-                AppNav(deepLinkInviteId = inviteId.value)
+                AppNav(
+                    deepLinkInviteId = inviteId.value,
+                    deepLinkTransferUri = transferUri.value,
+                )
                 LaunchedEffect(Unit) {
                     CrashLogger.lastCrash(applicationContext)?.let { report ->
                         CrashLogger.clear(applicationContext)
@@ -79,6 +86,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         inviteId.value = parseInviteUri(intent.data)
+        transferUri.value = parseTransferUri(intent.data)
     }
 
     private fun parseInviteUri(data: Uri?): String? {
@@ -96,6 +104,28 @@ class MainActivity : ComponentActivity() {
                     ?.takeIf { it.isNotBlank() }
             else -> null
         }
+    }
+
+    /** Transfer-ссылка из intent (`groupfund://transfer/<id>?code=…` или https) в https-виде. */
+    private fun parseTransferUri(data: Uri?): String? {
+        if (data == null) return null
+        val id: String? = when (data.scheme) {
+            "groupfund" ->
+                if (data.host == "transfer") data.lastPathSegment
+                else null
+            "https", "http" ->
+                if (data.host != "cheshirebat88.github.io") null
+                else data.path
+                    ?.takeIf { it.startsWith("/transfer/") }
+                    ?.removePrefix("/transfer/")
+                    ?.trimEnd('/')
+            else -> null
+        }
+            ?.takeIf { it.isNotBlank() }
+            ?: return null
+        val code = data.getQueryParameter("code") ?: return null
+        if (code.isEmpty()) return null
+        return "https://cheshirebat88.github.io/transfer/$id?code=$code"
     }
 
     private fun requestNotificationPermissionIfNeeded() {
@@ -119,12 +149,19 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun AppNav(deepLinkInviteId: String? = null) {
+private fun AppNav(
+    deepLinkInviteId: String? = null,
+    deepLinkTransferUri: String? = null,
+) {
     val nav = rememberNavController()
     val mainVm: MainViewModel = viewModel()
 
     LaunchedEffect(deepLinkInviteId) {
         if (deepLinkInviteId != null) mainVm.setPendingInvite(deepLinkInviteId)
+    }
+
+    LaunchedEffect(deepLinkTransferUri) {
+        if (deepLinkTransferUri != null) mainVm.setPendingTransferUri(deepLinkTransferUri)
     }
 
     NavHost(navController = nav, startDestination = "home") {

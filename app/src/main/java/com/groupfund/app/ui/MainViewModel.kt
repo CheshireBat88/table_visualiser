@@ -38,6 +38,8 @@ data class MainUiState(
     val pendingTransferIds: Set<String> = emptySet(),
     /** Идёт приём передачи (копирование таблицы на диск). */
     val acceptBusy: Boolean = false,
+    /** Пришли по ссылке передачи — открыть диалог «Принять» с подставленной ссылкой. */
+    val pendingTransferUri: String? = null,
     /** Результат приёма передачи (диалог). */
     val acceptResult: AcceptTransferResult? = null,
     /** id группы, для которой только что завершена передача (кнопка «Убрать прежнюю версию»). */
@@ -274,7 +276,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     _uiState.update { s ->
                         s.copy(
                             transferBusy = false,
-                            transferLink = "groupfund://transfer/${entry.spreadsheetId}?code=$code",
+                            transferLink = "https://cheshirebat88.github.io/transfer/${entry.spreadsheetId}?code=$code",
                             pendingTransferIds = s.pendingTransferIds + entryId,
                         )
                     }
@@ -400,6 +402,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun consumeTransferLink() {
         _uiState.update { it.copy(transferLink = null) }
+    }
+
+    /** Пришли по ссылке передачи — запоминаем её для диалога «Принять» (в https-виде). */
+    fun setPendingTransferUri(uri: String?) {
+        if (uri.isNullOrBlank()) return
+        _uiState.update { it.copy(pendingTransferUri = uri) }
+    }
+
+    /** Диалог «Принять» открыт со ссылкой — сбрасываем одноразовое событие. */
+    fun consumePendingTransferUri() {
+        _uiState.update { it.copy(pendingTransferUri = null) }
     }
 
     fun consumeAcceptResult() {

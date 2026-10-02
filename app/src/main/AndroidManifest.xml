@@ -29,6 +29,9 @@
                 <data
                     android:scheme="groupfund"
                     android:host="invite" />
+                <data
+                    android:scheme="groupfund"
+                    android:host="transfer" />
             </intent-filter>
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -38,6 +41,10 @@
                     android:scheme="https"
                     android:host="cheshirebat88.github.io"
                     android:pathPrefix="/invite" />
+                <data
+                    android:scheme="https"
+                    android:host="cheshirebat88.github.io"
+                    android:pathPrefix="/transfer" />
             </intent-filter>
         </activity>
     </application>

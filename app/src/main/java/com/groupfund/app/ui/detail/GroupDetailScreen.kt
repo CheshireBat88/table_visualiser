@@ -111,17 +111,25 @@ import com.groupfund.app.data.sheets.GroupSummary
 import com.groupfund.app.data.sheets.MonthPlan
 import com.groupfund.app.data.sheets.PaymentData
 import com.groupfund.app.data.sheets.PaymentInput
+import com.groupfund.app.data.sheets.PeriodStatistics
+import com.groupfund.app.data.sheets.PeriodSummary
 import com.groupfund.app.data.sheets.SheetCodec
 import com.groupfund.app.data.sheets.SummaryCalculator
 import com.groupfund.app.data.sheets.money
 import com.groupfund.app.data.sheets.round2
 import com.groupfund.app.ui.copyUrl
 import com.groupfund.app.ui.currencySymbol
+import com.groupfund.app.ui.monthFullLabel
 import com.groupfund.app.ui.monthShortLabel
 import com.groupfund.app.ui.openUrl
 import com.groupfund.app.ui.qrBitmap
 import com.groupfund.app.ui.create.CloneHolder
 import com.groupfund.app.ui.create.ClonePrefill
+import java.time.Instant
+import java.time.LocalDate
+import java.time.YearMonth
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1212,9 +1220,10 @@ onTopUpCollection: (String, String, Double?) -> Unit,
     onEditExpense: (Int) -> Unit,
     onDeleteExpense: (Int) -> Unit,
 ) {
-    var selectedTab by remember { mutableIntStateOf(0) }
+var selectedTab by remember { mutableIntStateOf(0) }
     var summaryCollapsed by remember { mutableStateOf(true) }
     var standaloneExpanded by remember { mutableStateOf(setOf<String>()) }
+    var showPeriodDialog by remember { mutableStateOf(false) }
     val tabs = listOf("Сводка", "Моя информация", "Платежи", "Сборы", "Расходы", "Участники")
     val pagerState = rememberPagerState(pageCount = { tabs.size })
     val scope = rememberCoroutineScope()
@@ -1274,9 +1283,10 @@ onTopUpCollection: (String, String, Double?) -> Unit,
                     }
                 }
 
-// Баланс группы — крупно, над таблицей сводки.
+// Баланс группы — крупно, над таблицей сводки. Тап открывает сводку за период.
                 val groupBalance = summary.totals.getOrNull(summary.months.size + 3) ?: 0.0
                 Card(
+                    onClick = { showPeriodDialog = true },
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(
                         containerColor = if (groupBalance < -0.005)
@@ -1284,23 +1294,39 @@ onTopUpCollection: (String, String, Double?) -> Unit,
                         else MaterialTheme.colorScheme.primaryContainer,
                     ),
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    ) {
-                        Text(
-                            "Баланс группы",
-                            style = MaterialTheme.typography.titleMedium,
-                            modifier = Modifier.weight(1f),
-                        )
-                        Text(
-                            "${if (groupBalance >= 0) "+" else ""}${money(groupBalance)} ${currencySymbol(group.currency)}",
-                            style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = if (groupBalance < -0.005)
-                                MaterialTheme.colorScheme.error
-                            else MaterialTheme.colorScheme.primary,
-                        )
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 10.dp)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "Баланс группы",
+                                style = MaterialTheme.typography.titleMedium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "${if (groupBalance >= 0) "+" else ""}${money(groupBalance)} ${currencySymbol(group.currency)}",
+                                style = MaterialTheme.typography.headlineSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (groupBalance < -0.005)
+                                    MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "Нажмите — траты и поступления за неделю/месяц/период",
+                                style = MaterialTheme.typography.labelSmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Icon(
+                                Icons.Default.ExpandMore,
+                                null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.outline,
+                            )
+                        }
                     }
                 }
 
@@ -1384,9 +1410,364 @@ onTopUpCollection: (String, String, Double?) -> Unit,
                 onEditExpense = onEditExpense,
                 onDeleteExpense = onDeleteExpense,
             )
-            5 -> MembersTab(group, summary, canEdit, onRemoveMember, onOpenMember, onAddMember)
+5 -> MembersTab(group, summary, canEdit, onRemoveMember, onOpenMember, onAddMember)
             }
         }
+
+        if (showPeriodDialog) {
+            PeriodSummaryDialog(
+                group = group,
+                currency = group.currency,
+                onDismiss = { showPeriodDialog = false },
+            )
+        }
+    }
+}
+
+private enum class PeriodMode { WEEK, MONTH, CUSTOM }
+
+private enum class DatePickTarget { WEEK, START, END }
+
+/**
+ * Окно сводки за период: выбор недели/месяца/произвольного срока, галочки
+ * «Траты / Траты вне бюджета / Поступления» и итог с разбивкой по участникам.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PeriodSummaryDialog(
+    group: GroupData,
+    currency: String,
+    onDismiss: () -> Unit,
+) {
+    val today = remember { LocalDate.now() }
+    val dateText = remember { DateTimeFormatter.ofPattern("dd.MM.yyyy") }
+
+    var mode by remember { mutableStateOf(PeriodMode.WEEK) }
+    var weekDay by remember { mutableStateOf<LocalDate?>(null) }
+    var month by remember { mutableStateOf<YearMonth?>(null) }
+    var startDate by remember { mutableStateOf(today.withDayOfMonth(1)) }
+    var endDate by remember { mutableStateOf(today) }
+    var includeExpenses by remember { mutableStateOf(true) }
+    var includeOffBudget by remember { mutableStateOf(true) }
+    var includeIncome by remember { mutableStateOf(true) }
+
+    var result by remember { mutableStateOf<PeriodSummary?>(null) }
+    var participantsExpanded by remember { mutableStateOf(false) }
+
+    var picking by remember { mutableStateOf<DatePickTarget?>(null) }
+
+    // Все месяцы, упоминаемые данными группы (плюс текущий) — для выбора «Месяц».
+    val knownMonths = remember(group) {
+        val s = linkedSetOf<YearMonth>()
+        group.months.forEach { s.add(it.month) }
+        group.expenses.forEach { runCatching { s.add(YearMonth.from(LocalDate.parse(it.date))) } }
+        group.payments.forEach { runCatching { s.add(YearMonth.from(LocalDate.parse(it.date))) } }
+        group.collections.forEach { runCatching { s.add(YearMonth.from(LocalDate.parse(it.date))) } }
+        s.add(YearMonth.now())
+        s.sortedDescending()
+    }
+
+    val weekRange = remember(weekDay) {
+        val day = weekDay ?: today
+        val start = day.minusDays((day.dayOfWeek.value - 1).toLong())
+        start to start.plusDays(6)
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (result == null) "Сводка за период" else "Сводка за период") },
+        text = {
+            val res = result
+            if (res != null) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "${dateText.format(res.fromDate)} — ${dateText.format(res.toDate)}",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    if (includeExpenses) {
+                        Line("Траты", res.expensesTotal, currency)
+                    }
+                    if (includeOffBudget) {
+                        Line("Траты вне бюджета", res.offBudgetTotal, currency)
+                    }
+                    if (includeIncome) {
+                        Line("Поступления", res.incomeTotal, currency)
+                    }
+                    if (includeIncome && (includeExpenses || includeOffBudget)) {
+                        HorizontalDivider()
+                        val delta = res.delta
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Разница (доходы − траты)",
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "${if (delta >= 0) "+" else ""}${money(delta)} ${currencySymbol(currency)}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (delta < -0.005) {
+                                    MaterialTheme.colorScheme.error
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                            )
+                        }
+                    }
+                    HorizontalDivider()
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { participantsExpanded = !participantsExpanded }
+                            .padding(vertical = 4.dp),
+                    ) {
+                        Text(
+                            "Траты участников",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Icon(
+                            if (participantsExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            null,
+                        )
+                    }
+                    if (participantsExpanded) {
+                        val listed = res.members
+                            .filter { it.total > 0.005 }
+                            .sortedByDescending { it.total }
+                        if (listed.isEmpty()) {
+                            Text("За период начислений по участникам нет", style = MaterialTheme.typography.bodySmall)
+                        } else {
+                            listed.forEach { m ->
+                                Column {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text(
+                                            m.name,
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        Text(
+                                            "${money(m.total)} ${currencySymbol(currency)}",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                    if (m.offBudgetShare > 0.005) {
+                                        Text(
+                                            "в бюджете ${money(m.expenseShare)} · вне бюджета ${money(m.offBudgetShare)}",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.outline,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Показываем траты, внебюджетные траты (отдельные сборы) и поступления за выбранный срок.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(PeriodMode.WEEK to "Неделя", PeriodMode.MONTH to "Месяц", PeriodMode.CUSTOM to "Произвольный")
+                            .forEach { (m, label) ->
+                                FilterChip(
+                                    selected = mode == m,
+                                    onClick = { mode = m },
+                                    label = { Text(label) },
+                                )
+                            }
+                    }
+                    when (mode) {
+                        PeriodMode.WEEK -> {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    "Неделя ${dateText.format(weekRange.first)} — ${dateText.format(weekRange.second)}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                TextButton(onClick = { picking = DatePickTarget.WEEK }) {
+                                    Text("Выбрать")
+                                }
+                            }
+                        }
+                        PeriodMode.MONTH -> {
+                            Text(
+                                "Месяц: ${month?.let(::monthShortLabel) ?: "выберите ниже"}",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            Column(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 200.dp)
+                                    .verticalScroll(rememberScrollState()),
+                            ) {
+                                knownMonths.forEach { ym ->
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable { month = ym }
+                                            .padding(vertical = 4.dp),
+                                    ) {
+                                        Text(
+                                            monthFullLabel(ym),
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                        if (month == ym) {
+                                            Text("✓", color = MaterialTheme.colorScheme.primary)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        PeriodMode.CUSTOM -> {
+                            TextButton(onClick = { picking = DatePickTarget.START }) {
+                                Text("Начало: ${dateText.format(startDate)}")
+                            }
+                            TextButton(onClick = { picking = DatePickTarget.END }) {
+                                Text("Конец: ${dateText.format(endDate)}")
+                            }
+                            if (endDate.isBefore(startDate)) {
+                                Text(
+                                    "Начало позже конца — поменяем их местами",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
+                    HorizontalDivider()
+                    CheckRow("Траты", includeExpenses, { includeExpenses = it })
+                    CheckRow("Траты вне бюджета", includeOffBudget, { includeOffBudget = it })
+                    CheckRow("Поступления", includeIncome, { includeIncome = it })
+                }
+            }
+        },
+        confirmButton = {
+            if (result != null) {
+                TextButton(onClick = onDismiss) { Text("Готово") }
+            } else {
+                TextButton(
+                    onClick = {
+                        val from: LocalDate
+                        val to: LocalDate
+                        when (mode) {
+                            PeriodMode.WEEK -> {
+                                from = weekRange.first
+                                to = weekRange.second
+                            }
+                            PeriodMode.MONTH -> {
+                                val ym = month ?: YearMonth.now()
+                                from = ym.atDay(1)
+                                to = ym.atEndOfMonth()
+                            }
+                            PeriodMode.CUSTOM -> {
+                                from = startDate
+                                to = endDate
+                            }
+                        }
+                        val (a, b) = if (from.isAfter(to)) to to from else from to to
+                        result = PeriodStatistics.compute(group, a, b)
+                        participantsExpanded = false
+                    },
+                ) {
+                    Text("Показать")
+                }
+            }
+        },
+        dismissButton = {
+            if (result != null) {
+                TextButton(onClick = { result = null }) { Text("Изменить период") }
+            } else {
+                TextButton(onClick = onDismiss) { Text("Отмена") }
+            }
+        },
+    )
+
+    picking?.let { target ->
+        val initial = when (target) {
+            DatePickTarget.WEEK -> weekDay ?: today
+            DatePickTarget.START -> startDate
+            DatePickTarget.END -> endDate
+        }
+        DatePickDialog(
+            initial = initial,
+            onPick = { picked ->
+                when (target) {
+                    DatePickTarget.WEEK -> weekDay = picked
+                    DatePickTarget.START -> startDate = picked
+                    DatePickTarget.END -> endDate = picked
+                }
+                picking = null
+            },
+            onDismiss = { picking = null },
+        )
+    }
+}
+
+@Composable
+private fun Line(label: String, amount: Double, currency: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            "${money(amount)} ${currencySymbol(currency)}",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@Composable
+private fun CheckRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onChange)
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DatePickDialog(
+    initial: LocalDate,
+    onPick: (LocalDate) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val state = rememberDatePickerState(
+        initialSelectedDateMillis = initial
+            .atStartOfDay(ZoneOffset.UTC)
+            .toInstant()
+            .toEpochMilli(),
+    )
+    DatePickerDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = {
+                val ms = state.selectedDateMillis
+                if (ms != null) {
+                    onPick(Instant.ofEpochMilli(ms).atZone(ZoneOffset.UTC).toLocalDate())
+                } else {
+                    onDismiss()
+                }
+            }) { Text("ОК") }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Отмена") }
+        },
+    ) {
+        DatePicker(state = state, showModeToggle = false)
     }
 }
 
@@ -1397,7 +1778,10 @@ private fun MyInfoTab(
     selectedMember: String?,
     onSelectMember: (String) -> Unit,
 ) {
-    var picking by remember { mutableStateOf(false) }
+var picking by remember { mutableStateOf(false) }
+    var expensesCollapsed by remember { mutableStateOf(true) }
+    var offBudgetCollapsed by remember { mutableStateOf(true) }
+    var paymentsCollapsed by remember { mutableStateOf(true) }
     val active = group.activeMembers
     val current = selectedMember?.let { name -> active.firstOrNull { it.name == name } }
     val currency = group.currency
@@ -1597,30 +1981,80 @@ private fun MyInfoTab(
                 }
             }
 
-            item {
-                Text(
-                    "Мои платежи",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
-                )
-            }
-            val memberPayments = group.payments
-                .mapIndexed { i, p -> IndexedValue(i, p) }
-                .filter { it.value.member == current.name }
-                .sortedByDescending { it.value.date }
-            if (memberPayments.isEmpty()) {
-                item {
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp)) {
-                            Text("Платежей пока нет", style = MaterialTheme.typography.bodySmall)
+item {
+                CollapsibleCard(
+                    title = "Траты по месяцам (${currencySymbol(currency)})",
+                    collapsed = expensesCollapsed,
+                    onToggle = { expensesCollapsed = !expensesCollapsed },
+                ) {
+                    val byMonth = PeriodStatistics.memberExpenseSharesByMonth(group, current.name, summary.months)
+                    if (summary.months.isEmpty()) {
+                        Text("В окне группы нет месяцев", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        summary.months.forEach { mp ->
+                            val v = byMonth[mp.month] ?: 0.0
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    monthShortLabel(mp.month),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    if (v > 0) "${money(v)} ${currencySymbol(currency)}" else "—",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                            }
+                        }
+                        if (byMonth.isEmpty()) {
+                            Text("Начислений по тратам нет", style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }
-            } else {
-                item {
-                    Card(modifier = Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            PaymentTransactionRows(memberPayments, currency)
+            }
+
+            item {
+                CollapsibleCard(
+                    title = "Внебюджетные траты (${currencySymbol(currency)})",
+                    collapsed = offBudgetCollapsed,
+                    onToggle = { offBudgetCollapsed = !offBudgetCollapsed },
+                ) {
+                    val rows = PeriodStatistics.memberOffBudgetRows(group, current.name)
+                    if (rows.isEmpty()) {
+                        Text("Отдельных сборов нет", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        rows.forEach { r ->
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    r.name,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Column(horizontalAlignment = Alignment.End) {
+                                    Text(
+                                        "${money(r.share)} ${currencySymbol(currency)}",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                    )
+                                    Text(
+                                        monthShortLabel(r.month),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.outline,
+                                    )
+                                }
+                            }
+                        }
+                        HorizontalDivider()
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Итого",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f),
+                            )
+                            Text(
+                                "${money(rows.sumOf { it.share })} ${currencySymbol(currency)}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                            )
                         }
                     }
                 }
@@ -1662,6 +2096,64 @@ private fun MyInfoTab(
                             }
                         }
                     }
+                }
+            }
+
+            item {
+                CollapsibleCard(
+                    title = "Мои платежи (${currencySymbol(currency)})",
+                    collapsed = paymentsCollapsed,
+                    onToggle = { paymentsCollapsed = !paymentsCollapsed },
+                ) {
+                    val memberPayments = group.payments
+                        .mapIndexed { i, p -> IndexedValue(i, p) }
+                        .filter { it.value.member == current.name }
+                        .sortedByDescending { it.value.date }
+                    if (memberPayments.isEmpty()) {
+                        Text("Платежей пока нет", style = MaterialTheme.typography.bodySmall)
+                    } else {
+                        PaymentTransactionRows(memberPayments, currency)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CollapsibleCard(
+    title: String,
+    collapsed: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onToggle)
+                    .padding(horizontal = 12.dp, vertical = 12.dp),
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(
+                    if (collapsed) Icons.Default.ExpandMore else Icons.Default.ExpandLess,
+                    null,
+                )
+            }
+            if (!collapsed) {
+                HorizontalDivider()
+                Column(
+                    Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    content()
                 }
             }
         }

@@ -30,6 +30,25 @@ data class MainUiState(
     val inviteJoined: String? = null,
     /** Ожидается согласие на доступ к Google (экран OAuth). */
     val consentIntent: Intent? = null,
+    /** Идёт генерация передачи группы. */
+    val transferBusy: Boolean = false,
+    /** Сгенерированная ссылка передачи — показывается в диалоге и копируется. */
+    val transferLink: String? = null,
+    /** id групп, для которых передача начата, но не завершена (бейдж «Передача»). */
+    val pendingTransferIds: Set<String> = emptySet(),
+    /** Идёт приём передачи (копирование таблицы на диск). */
+    val acceptBusy: Boolean = false,
+    /** Результат приёма передачи (диалог). */
+    val acceptResult: AcceptTransferResult? = null,
+    /** id группы, для которой только что завершена передача (кнопка «Убрать прежнюю версию»). */
+    val transferJustCompleted: String? = null,
+)
+
+/** Итог приёма передачи: копия готова, участников можно переключить самим или через прежнего ведущего. */
+data class AcceptTransferResult(
+    /** true — новая ссылка записана в прежнюю таблицу, участники переключатся сами. */
+    val autoFinalized: Boolean,
+    val newSpreadsheetId: String,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -122,6 +141,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * Проверяет доступность всех групп текущему аккаунту и помечает недоступные
      * (таблица удалена или создатель ограничил доступ). Запускается при старте
      * приложения и после смены аккаунта.
+     *
+     * Заодно читает маркер передачи: если прежняя таблица объявила копию —
+     * локальная запись переключается на неё (участнику не нужно переподключаться);
+     * если передача начата, но не завершена — id группы попадает в pendingTransferIds
+     * (бейдж «Передача» и пункт «Завершить передачу» у создателя).
      */
     fun refreshGroupsAvailability() {
         if (auth.storedEmail() == null || availabilityCheckRunning) return
@@ -129,10 +153,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val current = registry.groups.first()
+                val pending = mutableSetOf<String>()
                 current.forEach { entry ->
+                    val marker = repository.readTransferMarker(entry.spreadsheetId).getOrNull()
+                    val target = marker?.newSpreadsheetId
+                    if (!target.isNullOrEmpty() && target != entry.spreadsheetId) {
+                        // Прежняя таблица передана: переключаемся на копию и роль, если были создателем.
+                        val meta = repository.spreadsheetMeta(target).getOrNull()
+                        registry.replaceSpreadsheet(entry.spreadsheetId) { e ->
+                            e.copy(
+                                spreadsheetId = target,
+                                title = meta?.first ?: e.title,
+                                spreadsheetUrl = meta?.second ?: e.spreadsheetUrl,
+                                role = if (e.role == "creator") "observer" else e.role,
+                                localTitle = null,
+                                unavailable = false,
+                            )
+                        }
+                        return@forEach
+                    }
+                    if (marker?.pendingCode != null && entry.role == "creator") {
+                        pending += entry.id
+                    }
                     val accessible = repository.checkAccessible(entry.spreadsheetId).getOrNull()
                     if (accessible != null) registry.setUnavailable(entry.id, !accessible)
                 }
+                _uiState.update { it.copy(pendingTransferIds = pending) }
             } finally {
                 availabilityCheckRunning = false
             }
@@ -203,6 +249,191 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             registry.removeGroup(entry.id)
         }
+    }
+
+    // ---------- Передача группы другому ведущему ----------
+
+    private val transferAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+    private fun randomTransferCode(length: Int = 8): String = buildString {
+        repeat(length) { append(transferAlphabet.random()) }
+    }
+
+    /**
+     * Начинает передачу (только создатель): пишет маркер готовности в дабл
+     * и показывает ссылку-код передачи, которую нужно отправить новому ведущему.
+     */
+    fun startTransfer(entryId: String) {
+        viewModelScope.launch {
+            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            if (entry.role != "creator") return@launch
+            _uiState.update { it.copy(transferBusy = true) }
+            val code = randomTransferCode()
+            repository.writeTransferPending(entry.spreadsheetId, code)
+                .onSuccess {
+                    _uiState.update { s ->
+                        s.copy(
+                            transferBusy = false,
+                            transferLink = "groupfund://transfer/${entry.spreadsheetId}?code=$code",
+                            pendingTransferIds = s.pendingTransferIds + entryId,
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _uiState.update { s ->
+                        s.copy(
+                            transferBusy = false,
+                            error = "Не удалось начать передачу: ${e.message ?: "ошибка"}",
+                        )
+                    }
+                }
+        }
+    }
+
+    /**
+     * Финализирует передачу (создатель): в прежнюю таблицу записывается id копии,
+     * локальная запись переключается на неё, становится видна кнопка «Убрать прежнюю версию».
+     * @param newSpreadsheetId код завершения, показанный новым ведущим после копирования.
+     */
+    fun finishTransfer(entryId: String, newSpreadsheetId: String) {
+        val newId = newSpreadsheetId.trim()
+        if (newId.isEmpty()) return
+        viewModelScope.launch {
+            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            if (entry.spreadsheetId == newId) return@launch
+            val ok = repository.writeTransferDone(entry.spreadsheetId, newId).isSuccess
+            if (!ok) {
+                _uiState.update {
+                    it.copy(error = "Не удалось завершить передачу: к прежней таблице нужен доступ на запись")
+                }
+                return@launch
+            }
+            val meta = repository.spreadsheetMeta(newId).getOrNull()
+            registry.replaceSpreadsheet(entry.spreadsheetId) { e ->
+                e.copy(
+                    spreadsheetId = newId,
+                    title = meta?.first ?: e.title,
+                    spreadsheetUrl = meta?.second ?: e.spreadsheetUrl,
+                    role = "observer",
+                    localTitle = null,
+                    unavailable = false,
+                    retiredSpreadsheetId = entry.spreadsheetId,
+                )
+            }
+            _uiState.update { s ->
+                s.copy(
+                    pendingTransferIds = s.pendingTransferIds - entryId,
+                    transferJustCompleted = entryId,
+                )
+            }
+        }
+    }
+
+    /** «Убрать прежнюю версию»: удаляет старую таблицу с диска создателя после передачи. */
+    fun deleteRetiredCopy(entryId: String) {
+        viewModelScope.launch {
+            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            val retired = entry.retiredSpreadsheetId ?: return@launch
+            repository.deleteFromDrive(retired)
+                .onSuccess {
+                    registry.replaceSpreadsheet(entry.spreadsheetId) { e -> e.copy(retiredSpreadsheetId = null) }
+                    _uiState.update { it.copy(error = "Прежняя таблица удалена из Google Диска") }
+                }
+                .onFailure { e ->
+                    _uiState.update { it.copy(error = "Не удалось удалить прежнюю таблицу: ${e.message ?: "ошибка"}") }
+                }
+        }
+    }
+
+    /**
+     * Приём передачи (новый ведущий): по ссылке-коду копирует таблицу на свой диск,
+     * переносит права, проверяет полноту копии и пытается сам объявить её в прежней
+     * таблице. Если записи к прежней таблице нет — показывает код завершения,
+     * который нужно передать прежнему ведущему.
+     */
+    fun acceptTransfer(raw: String) {
+        if (_uiState.value.acceptBusy) return
+        val parsed = parseTransferLink(raw) ?: run {
+            _uiState.update {
+                it.copy(error = "Неверная ссылка передачи. Откройте ссылку из диалога «Передать группу»")
+            }
+            return
+        }
+        viewModelScope.launch {
+            _uiState.update { it.copy(acceptBusy = true) }
+            repository.copySpreadsheetToMe(parsed.spreadsheetId)
+                .onSuccess { entry ->
+                    val existing = registry.findBySpreadsheetId(parsed.spreadsheetId)
+                    if (existing != null) {
+                        registry.replaceSpreadsheet(parsed.spreadsheetId) { e ->
+                            e.copy(
+                                spreadsheetId = entry.spreadsheetId,
+                                title = entry.title,
+                                spreadsheetUrl = entry.spreadsheetUrl,
+                                role = "creator",
+                                localTitle = null,
+                                unavailable = false,
+                            )
+                        }
+                    } else {
+                        registry.addGroup(entry)
+                    }
+                    // Пробуем сразу объявить копию в прежней таблице (нужна запись).
+                    val auto = repository.writeTransferDone(parsed.spreadsheetId, entry.spreadsheetId).isSuccess
+                    _uiState.update { s ->
+                        s.copy(
+                            acceptBusy = false,
+                            acceptResult = AcceptTransferResult(autoFinalized = auto, newSpreadsheetId = entry.spreadsheetId),
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _uiState.update { s ->
+                        s.copy(
+                            acceptBusy = false,
+                            error = e.message ?: "Не удалось принять передачу",
+                        )
+                    }
+                }
+        }
+    }
+
+    fun consumeTransferLink() {
+        _uiState.update { it.copy(transferLink = null) }
+    }
+
+    fun consumeAcceptResult() {
+        _uiState.update { it.copy(acceptResult = null) }
+    }
+
+    fun consumeTransferJustCompleted() {
+        _uiState.update { it.copy(transferJustCompleted = null) }
+    }
+
+    private data class TransferLinkParts(val spreadsheetId: String, val code: String)
+
+    private fun parseTransferLink(raw: String): TransferLinkParts? {
+        var s = raw.trim()
+        listOf(
+            "groupfund://transfer/",
+            "https://cheshirebat88.github.io/transfer/",
+            "http://cheshirebat88.github.io/transfer/",
+        ).forEach { if (s.startsWith(it)) s = s.removePrefix(it) }
+        val sid: String
+        val code: String
+        if (s.contains("?code=")) {
+            sid = s.substringBefore("?code=").trim()
+            code = s.substringAfter("?code=").trim()
+        } else if (s.contains("|")) {
+            sid = s.substringBefore("|").trim()
+            code = s.substringAfter("|").trim()
+        } else {
+            sid = s.trim()
+            code = ""
+        }
+        val validId = sid.matches(Regex("[A-Za-z0-9_-]{20,}"))
+        val validCode = code.matches(Regex("[A-Za-z0-9]{8}"))
+        return if (validId && validCode) TransferLinkParts(sid, code) else null
     }
 
     /** Ищет группы, созданные приложением, на Google Диске. */

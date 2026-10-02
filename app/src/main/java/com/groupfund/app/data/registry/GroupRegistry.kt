@@ -94,6 +94,21 @@ class GroupRegistry(private val context: Context) {
         }
     }
 
+    /**
+     * Меняет запись группы по старому spreadsheetId (копия при передаче, авто-переключение).
+     * Если группы с таким id нет — просто ничего не меняет (пустая операция).
+     */
+    suspend fun replaceSpreadsheet(oldSpreadsheetId: String, transform: (GroupEntry) -> GroupEntry) {
+        context.groupDataStore.edit { prefs ->
+            val current = prefs[groupsKey]?.let { deserialize(it) } ?: return@edit
+            prefs[groupsKey] = serialize(
+                current.map { entry ->
+                    if (entry.spreadsheetId == oldSpreadsheetId) transform(entry) else entry
+                },
+            )
+        }
+    }
+
     // ---------- Выбор наблюдателя в группе ----------
 
     /**

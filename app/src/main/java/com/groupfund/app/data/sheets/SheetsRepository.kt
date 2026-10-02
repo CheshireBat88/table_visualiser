@@ -29,6 +29,16 @@ data class PaymentInput(
 class NotFoundException(message: String, cause: Throwable?) : Exception(message, cause)
 
 /**
+ * Маркер передачи группы, живущий в листе «Настройки» прежней таблицы (столбцы E:F).
+ * Пока идёт передача — заполнен `pendingCode`; после завершения — `newSpreadsheetId`
+ * (id копии), и все участники при следующем запуске автоматически переключаются на неё.
+ */
+data class TransferMarker(
+    val pendingCode: String? = null,
+    val newSpreadsheetId: String? = null,
+)
+
+/**
  * Репозиторий поверх Sheets/Drive API. Внутри берёт актуальный OAuth-токен
  * из GoogleAuthManager и подставляет его в каждый запрос.
  *
@@ -46,6 +56,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         const         val MAX_RATE_LIMIT_ATTEMPTS = 6
 
         val A1_CELL = Regex("^([A-Za-z]+)(\\d+)$")
+        /** Маркер передачи в листе «Настройки»: E1:F1 — код передачи, E2:F2 — id копии. */
+        val TRANSFER_MARKER_RANGE = "${Tabs.SETTINGS}!E1:F2"
+        const val TRANSFER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
     }
 
     private val sheetsApi: SheetsApiService by lazy {
@@ -322,6 +335,129 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     /** Удаляет файл таблицы с Google Drive (только если токен доступен). */
     suspend fun deleteFromDrive(spreadsheetId: String): Result<Unit> = withToken { _, drive, token ->
         drive.deleteFile("Bearer $token", spreadsheetId)
+    }
+
+    // ---------- Передача группы другому ведущему ----------
+
+    /** Название и ссылка таблицы (для договора при передаче). */
+    suspend fun spreadsheetMeta(spreadsheetId: String): Result<Pair<String, String>> =
+        withToken { sheets, _, token ->
+            val m = sheets.getSpreadsheetMeta("Bearer $token", spreadsheetId)
+            (m.properties?.title?.takeIf { it.isNotBlank() } ?: "Группа") to (m.spreadsheetUrl ?: "")
+        }
+
+    /** Читает маркер передачи из листа «Настройки» прежней таблицы. */
+    suspend fun readTransferMarker(spreadsheetId: String): Result<TransferMarker> =
+        withToken { sheets, _, token ->
+            val authHeader = "Bearer $token"
+            val rows = runCatching {
+                sheets.getValues(authHeader, spreadsheetId, TRANSFER_MARKER_RANGE).values.orEmpty()
+            }.getOrDefault(emptyList())
+            fun cell(row: Int, col: Int): String =
+                rows.getOrNull(row)?.getOrNull(col)?.let { it.toString() }?.trim().orEmpty()
+            TransferMarker(
+                pendingCode = cell(0, 1).ifEmpty { null },
+                newSpreadsheetId = cell(1, 1).ifEmpty { null },
+            )
+        }
+
+    /** Пишет код передачи (создатель инициирует передачу; нужна запись в таблице). */
+    suspend fun writeTransferPending(spreadsheetId: String, pendingCode: String): Result<Unit> =
+        withToken { sheets, _, token ->
+            sheets.batchUpdateValues(
+                "Bearer $token",
+                spreadsheetId,
+                BatchUpdateValuesRequest(
+                    data = listOf(
+                        ValueRange("${Tabs.SETTINGS}!E1:F1", listOf(listOf("transferPending", pendingCode))),
+                    ),
+                ),
+            )
+            Unit
+        }
+
+    /** Финализирует передачу: старая таблица объявляет id копии, участники переключатся на неё. */
+    suspend fun writeTransferDone(spreadsheetId: String, newSpreadsheetId: String): Result<Unit> =
+        withToken { sheets, _, token ->
+            sheets.batchUpdateValues(
+                "Bearer $token",
+                spreadsheetId,
+                BatchUpdateValuesRequest(
+                    data = listOf(
+                        ValueRange("${Tabs.SETTINGS}!E2:F2", listOf(listOf("transferTo", newSpreadsheetId))),
+                    ),
+                ),
+            )
+            Unit
+        }
+
+    /**
+     * Копирует всю таблицу на диск пользователя-получателя (он становится владельцем копии),
+     * переносит на копию права исходника и проверяет полноту копии: сверяет состав участников,
+     * количество и суммы платежей/расходов/сборов и настройки с оригиналом.
+     */
+    suspend fun copySpreadsheetToMe(spreadsheetId: String): Result<GroupEntry> =
+        withToken { sheets, drive, token ->
+            val authHeader = "Bearer $token"
+            val meta = spreadsheetMeta(spreadsheetId).getOrDefault("Группа" to "")
+            val title = meta.first
+            val copy = drive.copyFile(
+                authHeader,
+                spreadsheetId,
+                DriveFileCopy(
+                    name = title,
+                    appProperties = mapOf(APP_MARKER_KEY to APP_MARKER_VALUE),
+                ),
+            )
+            val copyId = copy.id ?: error("Google не вернул id копии")
+
+            // Переносим права исходника на копию (кроме владельца — им становится получатель).
+            val perms = runCatching {
+                drive.listPermissions(authHeader, spreadsheetId).permissions.orEmpty()
+            }.getOrDefault(emptyList())
+            perms.filter { it.role != "owner" }.forEach { p ->
+                runCatching {
+                    drive.addPermission(
+                        authHeader,
+                        copyId,
+                        body = PermissionRequest(
+                            role = p.role ?: "reader",
+                            type = p.type ?: "anyone",
+                            emailAddress = p.emailAddress,
+                            domain = p.domain,
+                        ),
+                    )
+                }.onFailure { Log.w("SheetsApi", "addPermission on copy $copyId failed", it) }
+            }
+
+            // Проверка полноты: копия должна совпадать с оригиналом по составу и суммам.
+            val original = readGroup(sheets, token, spreadsheetId)
+            val copied = readGroup(sheets, token, copyId)
+            verifyCopyComplete(original, copied)
+
+            GroupEntry(
+                id = UUID.randomUUID().toString(),
+                title = title,
+                spreadsheetId = copyId,
+                spreadsheetUrl = copy.webViewLink ?: "",
+                role = "creator",
+                createdAtEpochMillis = System.currentTimeMillis(),
+            )
+        }
+
+    /** Сверяет копию с оригиналом; при расхождении бросает понятную ошибку. */
+    private fun verifyCopyComplete(old: GroupData, copy: GroupData) {
+        val gaps = mutableListOf<String>()
+        if (old.baseAmount != copy.baseAmount || old.currency != copy.currency) gaps += "настройки"
+        if (old.months != copy.months) gaps += "план месяцев"
+        if (old.members.map { it.name }.sorted() != copy.members.map { it.name }.sorted()) gaps += "участники"
+        if (old.payments.size != copy.payments.size) gaps += "число платежей"
+        if (round2(old.payments.sumOf { it.amount }) != round2(copy.payments.sumOf { it.amount })) gaps += "сумму платежей"
+        if (old.expenses.size != copy.expenses.size) gaps += "число расходов"
+        if (old.collections.map { it.name }.sorted() != copy.collections.map { it.name }.sorted()) gaps += "сборы"
+        if (gaps.isNotEmpty()) {
+            error("Копия неполная — не совпадают $gaps. Повторите передачу и проверьте, что диск не переполнен")
+        }
     }
 
     /**

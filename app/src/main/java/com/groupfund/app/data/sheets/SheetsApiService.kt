@@ -81,6 +81,22 @@ interface DriveApiService {
         @Body body: PermissionRequest,
     ): PermissionResponse
 
+    /** Копирует файл на диск того, чей токен в запросе (получатель становится владельцем). */
+    @POST("drive/v3/files/{fileId}/copy")
+    suspend fun copyFile(
+        @Header("Authorization") authorization: String,
+        @Path("fileId") fileId: String,
+        @Body body: DriveFileCopy,
+    ): DriveFile
+
+    /** Список прав файла — чтобы перенести их на копию при передаче группы. */
+    @GET("drive/v3/files/{fileId}/permissions")
+    suspend fun listPermissions(
+        @Header("Authorization") authorization: String,
+        @Path("fileId") fileId: String,
+        @Query("fields") fields: String = "permissions(role,type,emailAddress,domain)",
+    ): PermissionListResponse
+
     /** Удаляет файл навсегда (не в корзину). */
     @DELETE("drive/v3/files/{fileId}")
     suspend fun deleteFile(
@@ -198,10 +214,23 @@ data class BatchGetValueRange(
 data class PermissionRequest(
     @SerializedName("role") val role: String = "reader",
     @SerializedName("type") val type: String = "anyone",
+    @SerializedName("emailAddress") val emailAddress: String? = null,
+    @SerializedName("domain") val domain: String? = null,
 )
 
 data class PermissionResponse(
     @SerializedName("id") val id: String? = null,
+)
+
+data class PermissionListResponse(
+    @SerializedName("permissions") val permissions: List<DrivePermission>? = null,
+)
+
+data class DrivePermission(
+    @SerializedName("role") val role: String? = null,
+    @SerializedName("type") val type: String? = null,
+    @SerializedName("emailAddress") val emailAddress: String? = null,
+    @SerializedName("domain") val domain: String? = null,
 )
 
 // ---------- DTO: метаданные таблицы ----------
@@ -253,6 +282,11 @@ data class DriveFilePatch(
 
 data class DriveFileRename(
     @SerializedName("name") val name: String,
+)
+
+data class DriveFileCopy(
+    @SerializedName("name") val name: String,
+    @SerializedName("appProperties") val appProperties: Map<String, String>? = null,
 )
 
 // ---------- DTO: структурные изменения и форматирование ----------

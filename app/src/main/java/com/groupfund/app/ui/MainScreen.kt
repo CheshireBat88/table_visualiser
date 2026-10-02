@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -54,8 +55,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
@@ -96,8 +99,11 @@ fun MainScreen(
     var showAccountDialog by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
     var showInfoDialog by remember { mutableStateOf(false) }
+    var showAcceptDialog by remember { mutableStateOf(false) }
     var pendingDelete by remember { mutableStateOf<GroupEntry?>(null) }
     var pendingRename by remember { mutableStateOf<GroupEntry?>(null) }
+    var finishTarget by remember { mutableStateOf<GroupEntry?>(null) }
+    var removeRetiredTarget by remember { mutableStateOf<GroupEntry?>(null) }
     var showUnavailableHint by remember { mutableStateOf(false) }
 
     LaunchedEffect(state.inviteJoined) {
@@ -105,6 +111,11 @@ fun MainScreen(
             onOpenGroup(id)
             viewModel.consumeInviteJoined()
         }
+    }
+
+    // Приняли передачу — закрываем диалог ввода, показываем результат.
+    LaunchedEffect(state.acceptResult) {
+        if (state.acceptResult != null) showAcceptDialog = false
     }
 
     val context = LocalContext.current
@@ -172,6 +183,11 @@ fun MainScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.app_name)) },
                 actions = {
+                    if (state.isSignedIn) {
+                        IconButton(onClick = { showAcceptDialog = true }) {
+                            Icon(Icons.Default.PersonAdd, "Принять передачу группы")
+                        }
+                    }
                     IconButton(onClick = { showInfoDialog = true }) {
                         Icon(Icons.Default.Info, "О приложении")
                     }
@@ -205,6 +221,9 @@ fun MainScreen(
                     onOpenGroup = onOpenGroup,
                     onDeleteRequest = { pendingDelete = it },
                     onRenameRequest = { pendingRename = it },
+                    onTransferRequest = { viewModel.startTransfer(it.id) },
+                    onFinishTransfer = { finishTarget = it },
+                    onRemoveRetired = { removeRetiredTarget = it },
                     onUnavailableClick = { showUnavailableHint = true },
                     onImportDrive = { showImportDialog = true },
                 )
@@ -284,8 +303,304 @@ fun MainScreen(
             if (showInfoDialog) {
                 AboutDialog(onDismiss = { showInfoDialog = false })
             }
+
+            if (state.transferLink != null) {
+                TransferStartDialog(
+                    link = state.transferLink.orEmpty(),
+                    onDismiss = { viewModel.consumeTransferLink() },
+                )
+            }
+
+            finishTarget?.let { entry ->
+                FinishTransferDialog(
+                    entry = entry,
+                    onDismiss = { finishTarget = null },
+                    onFinish = { newId ->
+                        viewModel.finishTransfer(entry.id, newId)
+                        finishTarget = null
+                    },
+                )
+            }
+
+            if (showAcceptDialog) {
+                AcceptTransferDialog(
+                    busy = state.acceptBusy,
+                    onDismiss = { showAcceptDialog = false },
+                    onAccept = viewModel::acceptTransfer,
+                )
+            }
+
+            state.acceptResult?.let { result ->
+                AcceptResultDialog(
+                    result = result,
+                    onDismiss = { viewModel.consumeAcceptResult() },
+                )
+            }
+
+            removeRetiredTarget?.let { entry ->
+                ConfirmRemoveRetiredDialog(
+                    entry = entry,
+                    onDismiss = { removeRetiredTarget = null },
+                    onConfirm = {
+                        viewModel.deleteRetiredCopy(entry.id)
+                        removeRetiredTarget = null
+                    },
+                )
+            }
+
+            // Только что завершили передачу — предложить убрать прежнюю таблицу.
+            state.transferJustCompleted?.let { id ->
+                state.groups.firstOrNull { it.id == id }?.let { _ ->
+                    AlertDialog(
+                        onDismissRequest = { viewModel.consumeTransferJustCompleted() },
+                        title = { Text("Группа передана") },
+                        text = {
+                            Text(
+                                "Участники уже переключились на новую таблицу.\n\n" +
+                                    "Убрать прежнюю таблицу из вашего Google Диска?",
+                            )
+                        },
+                        confirmButton = {
+                            TextButton(
+                                onClick = {
+                                    viewModel.deleteRetiredCopy(id)
+                                    viewModel.consumeTransferJustCompleted()
+                                },
+                            ) {
+                                Text("Убрать прежнюю версию")
+                            }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { viewModel.consumeTransferJustCompleted() }) {
+                                Text("Позже")
+                            }
+                        },
+                    )
+                }
+            }
         }
     }
+}
+
+@Composable
+@Suppress("DEPRECATION") // LocalClipboardManager: с compose 1.7+ заменён на LocalClipboard
+private fun TransferStartDialog(link: String, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Передать группу") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Отправьте эту ссылку новому ведущему (сообщением или как угодно). " +
+                        "Он откроет её в приложении — и таблица скопируется на его диск со всеми " +
+                        "данными. После этого он пришлёт вам код завершения.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = link,
+                    onValueChange = {},
+                    readOnly = true,
+                    maxLines = 3,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Button(
+                    onClick = { clipboard.setText(AnnotatedString(link)) },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Скопировать ссылку")
+                }
+                Text(
+                    "Пока передача не завершена, группа помечена «Передача…».",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+                Text(
+                    "Важно: чтобы участники переключились на новую таблицу автоматически, " +
+                        "по завершении нужно вставить код, который покажет новый ведущий",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Понятно")
+            }
+        },
+    )
+}
+
+@Composable
+private fun FinishTransferDialog(
+    entry: GroupEntry,
+    onDismiss: () -> Unit,
+    onFinish: (String) -> Unit,
+) {
+    var code by remember(entry.id) { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Завершить передачу") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Группа «${entry.title}» ожидает завершения передачи. " +
+                        "Вставьте код завершения, который показал новый ведущий после копирования.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = code,
+                    onValueChange = { code = it },
+                    label = { Text("Код завершения") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "После этого все участники автоматически переключатся на новую таблицу.",
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = code.isNotBlank(),
+                onClick = { onFinish(code.trim()) },
+            ) {
+                Text("Завершить")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
+            }
+        },
+    )
+}
+
+@Composable
+private fun AcceptTransferDialog(
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onAccept: (String) -> Unit,
+) {
+    var link by remember { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Принять передачу группы") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    "Вставьте ссылку, которую отправил прежний ведущий. " +
+                        "Таблица скопируется на ваш диск, и вы станете её ведущим.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    value = link,
+                    onValueChange = { link = it },
+                    label = { Text("Ссылка передачи") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (busy) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Копируем таблицу и проверяем полноту…",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !busy && link.isNotBlank(),
+                onClick = { onAccept(link.trim()) },
+            ) {
+                Text("Принять")
+            }
+        },
+        dismissButton = {
+            TextButton(enabled = !busy, onClick = onDismiss) {
+                Text("Отмена")
+            }
+        },
+    )
+}
+
+@Composable
+@Suppress("DEPRECATION") // LocalClipboardManager: с compose 1.7+ заменён на LocalClipboard
+private fun AcceptResultDialog(
+    result: AcceptTransferResult,
+    onDismiss: () -> Unit,
+) {
+    val clipboard = LocalClipboardManager.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (result.autoFinalized) "Группа принята" else "Копия готова") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (result.autoFinalized) {
+                    Text(
+                        "Таблица скопирована на ваш диск, и все участники уже переключаются " +
+                            "на неё автоматически. Вы теперь ведущий группы.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else {
+                    Text(
+                        "Таблица скопирована на ваш диск со всеми данными. " +
+                            "Отправьте прежнему ведущему этот код завершения — после этого " +
+                            "все участники автоматически переключатся на новую таблицу:",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    OutlinedTextField(
+                        value = result.newSpreadsheetId,
+                        onValueChange = {},
+                        readOnly = true,
+                        maxLines = 3,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Button(
+                        onClick = { clipboard.setText(AnnotatedString(result.newSpreadsheetId)) },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text("Скопировать код")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Понятно")
+            }
+        },
+    )
+}
+
+@Composable
+private fun ConfirmRemoveRetiredDialog(
+    entry: GroupEntry,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Убрать прежнюю версию?") },
+        text = {
+            Text(
+                "Прежняя таблица группы «${entry.title}» будет удалена из вашего Google Диска " +
+                    "безвозвратно. Участники уже работают с новой таблицей.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Убрать прежнюю версию")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Отмена")
+            }
+        },
+    )
 }
 
 @Composable
@@ -408,6 +723,9 @@ private fun GroupsContent(
     onOpenGroup: (String) -> Unit,
     onDeleteRequest: (GroupEntry) -> Unit,
     onRenameRequest: (GroupEntry) -> Unit,
+    onTransferRequest: (GroupEntry) -> Unit,
+    onFinishTransfer: (GroupEntry) -> Unit,
+    onRemoveRetired: (GroupEntry) -> Unit,
     onUnavailableClick: () -> Unit,
     onImportDrive: () -> Unit,
 ) {
@@ -470,12 +788,16 @@ private fun GroupsContent(
                     entry = dg.entry,
                     label = dg.label,
                     unavailable = dg.entry.unavailable,
+                    transferring = dg.entry.id in state.pendingTransferIds,
                     onClick = {
                         if (dg.entry.unavailable) onUnavailableClick()
                         else onOpenGroup(dg.entry.id)
                     },
                     onRename = { onRenameRequest(dg.entry) },
                     onDelete = { onDeleteRequest(dg.entry) },
+                    onTransfer = { onTransferRequest(dg.entry) },
+                    onFinishTransfer = { onFinishTransfer(dg.entry) },
+                    onRemoveRetired = { onRemoveRetired(dg.entry) },
                 )
             }
         }
@@ -487,9 +809,13 @@ private fun GroupCard(
     entry: GroupEntry,
     label: String,
     unavailable: Boolean,
+    transferring: Boolean,
     onClick: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
+    onTransfer: () -> Unit,
+    onFinishTransfer: () -> Unit,
+    onRemoveRetired: () -> Unit,
 ) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Row(
@@ -509,6 +835,21 @@ private fun GroupCard(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (transferring) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Передача…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.tertiary,
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            "Ожидает завершения",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.outline,
+                        )
+                    }
+                }
                 if (unavailable) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -547,6 +888,33 @@ private fun GroupCard(
                     Icon(Icons.Default.MoreVert, "Действия с группой")
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    if (entry.role == "creator") {
+                        DropdownMenuItem(
+                            text = { Text("Передать группу") },
+                            onClick = {
+                                menuOpen = false
+                                onTransfer()
+                            },
+                        )
+                        if (transferring) {
+                            DropdownMenuItem(
+                                text = { Text("Завершить передачу") },
+                                onClick = {
+                                    menuOpen = false
+                                    onFinishTransfer()
+                                },
+                            )
+                        }
+                    }
+                    if (entry.retiredSpreadsheetId != null) {
+                        DropdownMenuItem(
+                            text = { Text("Убрать прежнюю версию") },
+                            onClick = {
+                                menuOpen = false
+                                onRemoveRetired()
+                            },
+                        )
+                    }
                     DropdownMenuItem(
                         text = { Text("Переименовать") },
                         onClick = {

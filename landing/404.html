@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Открыть группу</title>
+  <title>GroupFund</title>
   <style>
     body { font-family: system-ui, sans-serif; max-width: 420px; margin: 48px auto; padding: 0 16px; text-align: center; color: #1a1a1a; }
     button { font-size: 18px; padding: 14px 28px; border: 0; border-radius: 10px; background: #1a73e8; color: #fff; cursor: pointer; }
@@ -13,22 +13,33 @@
   </style>
 </head>
 <body>
-  <h2>Приглашение в группу GroupFund</h2>
-  <p>Сейчас откроем приложение. Если ничего не произошло — нажмите кнопку:</p>
+  <h2 id="title">Открыть GroupFund</h2>
+  <p id="subtitle">Сейчас откроем приложение. Если ничего не произошло — нажмите кнопку:</p>
   <p><button id="open">Открыть в приложении</button></p>
   <p class="hint">Если приложение не установлено или кнопка не работает — скачайте его и попробуйте снова, либо установите из Google Play.</p>
   <script>
-    if (location.pathname.indexOf('/invite/') !== 0) {
-      document.querySelector('h2').textContent = 'Страница не найдена';
-      document.querySelector('p').textContent = 'Вернитесь к приглашению, либо проверьте ссылку.';
-      document.getElementById('open').style.display = 'none';
+    var title = document.getElementById('title');
+    var subtitle = document.getElementById('subtitle');
+    var btn = document.getElementById('open');
+    var appUrl = null;
+    var mInv = location.pathname.match(/^\/invite\/([^/]+)\/?$/);
+    var mTr = location.pathname.match(/^\/transfer\/([^/]+)\/?$/);
+    if (mInv) {
+      title.textContent = 'Приглашение в группу GroupFund';
+      appUrl = 'groupfund://invite/' + decodeURIComponent(mInv[1]);
+    } else if (mTr) {
+      title.textContent = 'Передача группы GroupFund';
+      var code = new URLSearchParams(location.search).get('code') || '';
+      appUrl = 'groupfund://transfer/' + decodeURIComponent(mTr[1]) + (code ? '?code=' + code : '');
+    }
+    if (appUrl) {
+      function tryOpen() { window.location = appUrl; }
+      window.addEventListener('load', function () { setTimeout(tryOpen, 400); });
+      btn.addEventListener('click', tryOpen);
     } else {
-      var m = location.pathname.match(/^\/invite\/([^/]+)\/?$/);
-      var id = m ? decodeURIComponent(m[1]) : '';
-      var appUrl = id ? 'groupfund://invite/' + id : null;
-      function tryOpen() { if (appUrl) { window.location = appUrl; } }
-      window.addEventListener('load', function () { if (appUrl) { setTimeout(tryOpen, 400); } });
-      document.getElementById('open').addEventListener('click', tryOpen);
+      title.textContent = 'Страница не найдена';
+      subtitle.textContent = 'Вернитесь к приглашению, либо проверьте ссылку.';
+      btn.style.display = 'none';
     }
   </script>
 </body>

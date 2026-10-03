@@ -376,6 +376,21 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             Unit
         }
 
+    /** Отменяет начатую передачу: стирает код в E1:F1, ссылка перестаёт действовать. */
+    suspend fun clearTransferPending(spreadsheetId: String): Result<Unit> =
+        withToken { sheets, _, token ->
+            sheets.batchUpdateValues(
+                "Bearer $token",
+                spreadsheetId,
+                BatchUpdateValuesRequest(
+                    data = listOf(
+                        ValueRange("${Tabs.SETTINGS}!E1:F1", listOf(listOf("", ""))),
+                    ),
+                ),
+            )
+            Unit
+        }
+
     /** Финализирует передачу: старая таблица объявляет id копии, участники переключатся на неё. */
     suspend fun writeTransferDone(spreadsheetId: String, newSpreadsheetId: String): Result<Unit> =
         withToken { sheets, _, token ->

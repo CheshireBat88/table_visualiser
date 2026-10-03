@@ -104,6 +104,7 @@ fun MainScreen(
     var pendingDelete by remember { mutableStateOf<GroupEntry?>(null) }
     var pendingRename by remember { mutableStateOf<GroupEntry?>(null) }
     var finishTarget by remember { mutableStateOf<GroupEntry?>(null) }
+    var cancelTransferTarget by remember { mutableStateOf<GroupEntry?>(null) }
     var removeRetiredTarget by remember { mutableStateOf<GroupEntry?>(null) }
     var showUnavailableHint by remember { mutableStateOf(false) }
 
@@ -238,6 +239,7 @@ fun MainScreen(
                     onRenameRequest = { pendingRename = it },
                     onTransferRequest = { viewModel.startTransfer(it.id) },
                     onFinishTransfer = { finishTarget = it },
+                    onCancelTransfer = { cancelTransferTarget = it },
                     onRemoveRetired = { removeRetiredTarget = it },
                     onUnavailableClick = { showUnavailableHint = true },
                     onImportDrive = { showImportDialog = true },
@@ -333,6 +335,17 @@ fun MainScreen(
                     onFinish = { newId ->
                         viewModel.finishTransfer(entry.id, newId)
                         finishTarget = null
+                    },
+                )
+            }
+
+            cancelTransferTarget?.let { entry ->
+                ConfirmCancelTransferDialog(
+                    entry = entry,
+                    onDismiss = { cancelTransferTarget = null },
+                    onConfirm = {
+                        viewModel.cancelTransfer(entry.id)
+                        cancelTransferTarget = null
                     },
                 )
             }
@@ -555,13 +568,30 @@ private fun AcceptResultDialog(
     val clipboard = LocalClipboardManager.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (result.autoFinalized) "Группа принята" else "Копия готова") },
+        title = {
+            Text(
+                when {
+                    result.autoFinalized -> "Группа принята"
+                    result.alreadyTransferredTo != null -> "Копия сохранена"
+                    else -> "Копия готова"
+                },
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 if (result.autoFinalized) {
                     Text(
                         "Таблица скопирована на ваш диск, и все участники уже переключаются " +
                             "на неё автоматически. Вы теперь ведущий группы.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                } else if (result.alreadyTransferredTo != null) {
+                    Text(
+                        "Копия сохранена в вашем списке как отдельная группа. Но передача " +
+                            "уже завершена другим получателем: участники переключаются на его " +
+                            "таблицу автоматически.\n\nЕсли нужно, чтобы ведущим были вы — " +
+                            "попросите прежнего ведущего завершить передачу именно на вашу копию " +
+                            "или отменить текущую.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 } else {
@@ -618,6 +648,35 @@ private fun ConfirmRemoveRetiredDialog(
         dismissButton = {
             TextButton(onClick = onDismiss) {
                 Text("Отмена")
+            }
+        },
+    )
+}
+
+@Composable
+private fun ConfirmCancelTransferDialog(
+    entry: GroupEntry,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Отменить передачу группы?") },
+        text = {
+            Text(
+                "Передача группы «${entry.title}» будет отменена, и ссылка с кодом перестанет " +
+                    "действовать. Новый ведущий не сможет принять таблицу по этой ссылке.\n\n" +
+                    "Начать передачу заново можно будет в любой момент.",
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Отменить передачу")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Закрыть")
             }
         },
     )
@@ -745,6 +804,7 @@ private fun GroupsContent(
     onRenameRequest: (GroupEntry) -> Unit,
     onTransferRequest: (GroupEntry) -> Unit,
     onFinishTransfer: (GroupEntry) -> Unit,
+    onCancelTransfer: (GroupEntry) -> Unit,
     onRemoveRetired: (GroupEntry) -> Unit,
     onUnavailableClick: () -> Unit,
     onImportDrive: () -> Unit,
@@ -817,6 +877,7 @@ private fun GroupsContent(
                     onDelete = { onDeleteRequest(dg.entry) },
                     onTransfer = { onTransferRequest(dg.entry) },
                     onFinishTransfer = { onFinishTransfer(dg.entry) },
+                    onCancelTransfer = { onCancelTransfer(dg.entry) },
                     onRemoveRetired = { onRemoveRetired(dg.entry) },
                 )
             }
@@ -835,6 +896,7 @@ private fun GroupCard(
     onDelete: () -> Unit,
     onTransfer: () -> Unit,
     onFinishTransfer: () -> Unit,
+    onCancelTransfer: () -> Unit,
     onRemoveRetired: () -> Unit,
 ) {
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
@@ -909,19 +971,27 @@ private fun GroupCard(
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     if (entry.role == "creator") {
-                        DropdownMenuItem(
-                            text = { Text("Передать группу") },
-                            onClick = {
-                                menuOpen = false
-                                onTransfer()
-                            },
-                        )
-                        if (transferring) {
+                        if (!transferring) {
+                            DropdownMenuItem(
+                                text = { Text("Передать группу") },
+                                onClick = {
+                                    menuOpen = false
+                                    onTransfer()
+                                },
+                            )
+                        } else {
                             DropdownMenuItem(
                                 text = { Text("Завершить передачу") },
                                 onClick = {
                                     menuOpen = false
                                     onFinishTransfer()
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Отменить передачу") },
+                                onClick = {
+                                    menuOpen = false
+                                    onCancelTransfer()
                                 },
                             )
                         }

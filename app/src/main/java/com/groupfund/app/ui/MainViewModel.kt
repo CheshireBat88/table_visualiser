@@ -51,6 +51,8 @@ data class AcceptTransferResult(
     /** true — новая ссылка записана в прежнюю таблицу, участники переключатся сами. */
     val autoFinalized: Boolean,
     val newSpreadsheetId: String,
+    /** Если не null — передача уже завершена другим получателем (id его копии). */
+    val alreadyTransferredTo: String? = null,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -269,6 +271,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
             if (entry.role != "creator") return@launch
+            // Не даём инициировать вторую передачу по той же группе: в локальном списке
+            // и/или в маркере таблицы уже может быть активная (или завершённая) передача.
+            if (_uiState.value.pendingTransferIds.contains(entryId)) {
+                _uiState.update {
+                    it.copy(error = "По этой группе уже идёт передача — завершите её или отмените")
+                }
+                return@launch
+            }
+            val marker = repository.readTransferMarker(entry.spreadsheetId).getOrNull()
+            if (marker?.pendingCode != null || marker?.newSpreadsheetId != null) {
+                _uiState.update { it.copy(error = "По этой группе уже идёт или завершена передача") }
+                return@launch
+            }
             _uiState.update { it.copy(transferBusy = true) }
             val code = randomTransferCode()
             repository.writeTransferPending(entry.spreadsheetId, code)
@@ -292,6 +307,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Отменяет начатую передачу (создатель): стирает код в прежней таблице, ссылка перестаёт действовать. */
+    fun cancelTransfer(entryId: String) {
+        viewModelScope.launch {
+            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            repository.clearTransferPending(entry.spreadsheetId)
+                .onSuccess {
+                    _uiState.update { s ->
+                        s.copy(
+                            pendingTransferIds = s.pendingTransferIds - entryId,
+                            error = "Передача отменена — прежняя ссылка больше не действует",
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    _uiState.update {
+                        it.copy(error = "Не удалось отменить передачу: ${e.message ?: "ошибка"}")
+                    }
+                }
+        }
+    }
+
     /**
      * Финализирует передачу (создатель): в прежнюю таблицу записывается id копии,
      * локальная запись переключается на неё, становится видна кнопка «Убрать прежнюю версию».
@@ -303,6 +339,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
             if (entry.spreadsheetId == newId) return@launch
+            val marker = repository.readTransferMarker(entry.spreadsheetId).getOrNull()
+            if (marker?.newSpreadsheetId != null) {
+                _uiState.update { it.copy(error = "Передача уже завершена — ссылка больше не действует") }
+                return@launch
+            }
             val ok = repository.writeTransferDone(entry.spreadsheetId, newId).isSuccess
             if (!ok) {
                 _uiState.update {
@@ -363,6 +404,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             _uiState.update { it.copy(acceptBusy = true) }
+            // Проверяем маркер до копирования: передача может быть уже завершена или
+            // отменена, а код — не совпадать (устаревшая ссылка).
+            val marker = repository.readTransferMarker(parsed.spreadsheetId).getOrNull()
+            if (marker?.newSpreadsheetId != null) {
+                _uiState.update { s ->
+                    s.copy(
+                        acceptBusy = false,
+                        error = "Эта группа уже передана — попросите новую ссылку у ведущего",
+                    )
+                }
+                return@launch
+            }
+            if (marker?.pendingCode == null) {
+                _uiState.update { s ->
+                    s.copy(
+                        acceptBusy = false,
+                        error = "Передача не найдена: возможно, она отменена или завершена",
+                    )
+                }
+                return@launch
+            }
+            if (marker.pendingCode != parsed.code) {
+                _uiState.update { s ->
+                    s.copy(
+                        acceptBusy = false,
+                        error = "Код передачи не совпадает. Попросите свежую ссылку у ведущего",
+                    )
+                }
+                return@launch
+            }
             repository.copySpreadsheetToMe(parsed.spreadsheetId)
                 .onSuccess { entry ->
                     val existing = registry.findBySpreadsheetId(parsed.spreadsheetId)
@@ -380,12 +451,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     } else {
                         registry.addGroup(entry)
                     }
-                    // Пробуем сразу объявить копию в прежней таблице (нужна запись).
-                    val auto = repository.writeTransferDone(parsed.spreadsheetId, entry.spreadsheetId).isSuccess
+                    // Перечитываем маркер: за время копирования передача могла завершиться
+                    // другим получателем. Первый записавший id копии — победитель.
+                    val fresh = repository.readTransferMarker(parsed.spreadsheetId).getOrNull()
+                    val takenId = fresh?.newSpreadsheetId
+                    val auto = takenId == null || takenId == entry.spreadsheetId
+                    if (auto) {
+                        runCatching { repository.writeTransferDone(parsed.spreadsheetId, entry.spreadsheetId) }
+                    }
                     _uiState.update { s ->
                         s.copy(
                             acceptBusy = false,
-                            acceptResult = AcceptTransferResult(autoFinalized = auto, newSpreadsheetId = entry.spreadsheetId),
+                            acceptResult = AcceptTransferResult(
+                                autoFinalized = auto,
+                                newSpreadsheetId = entry.spreadsheetId,
+                                alreadyTransferredTo = if (auto) null else takenId,
+                            ),
                         )
                     }
                 }

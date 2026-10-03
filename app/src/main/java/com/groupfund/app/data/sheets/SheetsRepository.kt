@@ -413,52 +413,71 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      */
     suspend fun copySpreadsheetToMe(spreadsheetId: String): Result<GroupEntry> =
         withToken { sheets, drive, token ->
-            val authHeader = "Bearer $token"
-            val meta = spreadsheetMeta(spreadsheetId).getOrDefault("Группа" to "")
-            val title = meta.first
-            val copy = drive.copyFile(
-                authHeader,
-                spreadsheetId,
-                DriveFileCopy(
-                    name = title,
-                    appProperties = mapOf(APP_MARKER_KEY to APP_MARKER_VALUE),
-                ),
-            )
-            val copyId = copy.id ?: error("Google не вернул id копии")
-
-            // Переносим права исходника на копию (кроме владельца — им становится получатель).
-            val perms = runCatching {
-                drive.listPermissions(authHeader, spreadsheetId).permissions.orEmpty()
-            }.getOrDefault(emptyList())
-            perms.filter { it.role != "owner" }.forEach { p ->
-                runCatching {
-                    drive.addPermission(
-                        authHeader,
-                        copyId,
-                        body = PermissionRequest(
-                            role = p.role ?: "reader",
-                            type = p.type ?: "anyone",
-                            emailAddress = p.emailAddress,
-                            domain = p.domain,
-                        ),
-                    )
-                }.onFailure { Log.w("SheetsApi", "addPermission on copy $copyId failed", it) }
+            suspend fun attempt(): GroupEntry = copySpreadsheetOnce(sheets, drive, token, spreadsheetId)
+            try {
+                attempt()
+            } catch (e: retrofit2.HttpException) {
+                if (e.code() != 404) throw e
+                // Сразу после files.copy копия иногда ещё «не открыта» для чтения → 404.
+                // Один повтор после короткой паузы лечит это.
+                delay(1200)
+                attempt()
             }
-
-            // Проверка полноты: копия должна совпадать с оригиналом по составу и суммам.
-            val original = readGroup(sheets, token, spreadsheetId)
-            val copied = readGroup(sheets, token, copyId)
-            verifyCopyComplete(original, copied)
-
-            GroupEntry(
-                id = UUID.randomUUID().toString(),
-                title = title,
-                spreadsheetId = copyId,
-                spreadsheetUrl = copy.webViewLink ?: "",
-                role = "creator",
-                createdAtEpochMillis = System.currentTimeMillis(),
-            )
         }
+
+    /** Однократная попытка скопировать таблицу и проверить полноту копии. */
+    private suspend fun copySpreadsheetOnce(
+        sheets: SheetsApiService,
+        drive: DriveApiService,
+        token: String,
+        spreadsheetId: String,
+    ): GroupEntry {
+        val authHeader = "Bearer $token"
+        val meta = spreadsheetMeta(spreadsheetId).getOrDefault("Группа" to "")
+        val title = meta.first
+        val copy = drive.copyFile(
+            authHeader,
+            spreadsheetId,
+            DriveFileCopy(
+                name = title,
+                appProperties = mapOf(APP_MARKER_KEY to APP_MARKER_VALUE),
+            ),
+        )
+        val copyId = copy.id ?: error("Google не вернул id копии")
+
+        // Переносим права исходника на копию (кроме владельца — им становится получатель).
+        val perms = runCatching {
+            drive.listPermissions(authHeader, spreadsheetId).permissions.orEmpty()
+        }.getOrDefault(emptyList())
+        perms.filter { it.role != "owner" }.forEach { p ->
+            runCatching {
+                drive.addPermission(
+                    authHeader,
+                    copyId,
+                    body = PermissionRequest(
+                        role = p.role ?: "reader",
+                        type = p.type ?: "anyone",
+                        emailAddress = p.emailAddress,
+                        domain = p.domain,
+                    ),
+                )
+            }.onFailure { Log.w("SheetsApi", "addPermission on copy $copyId failed", it) }
+        }
+
+        // Проверка полноты: копия должна совпадать с оригиналом по составу и суммам.
+        val original = readGroup(sheets, token, spreadsheetId)
+        val copied = readGroup(sheets, token, copyId)
+        verifyCopyComplete(original, copied)
+
+        return GroupEntry(
+            id = UUID.randomUUID().toString(),
+            title = title,
+            spreadsheetId = copyId,
+            spreadsheetUrl = copy.webViewLink ?: "",
+            role = "creator",
+            createdAtEpochMillis = System.currentTimeMillis(),
+        )
+    }
 
     /** Сверяет копию с оригиналом; при расхождении бросает понятную ошибку. */
     private fun verifyCopyComplete(old: GroupData, copy: GroupData) {

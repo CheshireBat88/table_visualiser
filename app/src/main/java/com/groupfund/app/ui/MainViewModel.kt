@@ -469,9 +469,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     // другим получателем. Первый записавший id копии — победитель.
                     val fresh = repository.readTransferMarker(parsed.spreadsheetId).getOrNull()
                     val takenId = fresh?.newSpreadsheetId
-                    val auto = takenId == null || takenId == entry.spreadsheetId
-                    if (auto) {
-                        runCatching { repository.writeTransferDone(parsed.spreadsheetId, entry.spreadsheetId) }
+                    // Первый записавший id копии — победитель. Если приёмщик не может писать
+                    // в прежнюю таблицу (например, он лишь наблюдатель) — выдаём код завершения.
+                    val auto = if (takenId == null || takenId == entry.spreadsheetId) {
+                        repository.writeTransferDone(parsed.spreadsheetId, entry.spreadsheetId).isSuccess
+                    } else {
+                        false
                     }
                     _uiState.update { s ->
                         s.copy(
@@ -489,9 +492,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         s.copy(
                             acceptBusy = false,
                             error = if (e is NotFoundException) {
-                                "Исходная таблица недоступна. Попросите ведущего ещё раз нажать " +
-                                    "«Передать группу» — это откроет доступ по ссылке, и передачу " +
-                                    "можно будет принять."
+                                "Исходная таблица недоступна для вашего аккаунта. Попросите ведущего " +
+                                    "отменить текущую передачу («Отменить передачу» в меню группы) и " +
+                                    "начать её заново — при новой передаче таблица открывается по ссылке.\n\n" +
+                                    e.message.orEmpty().lineSequence().take(6).joinToString("\n").take(300)
                             } else {
                                 e.message ?: "Не удалось принять передачу"
                             },

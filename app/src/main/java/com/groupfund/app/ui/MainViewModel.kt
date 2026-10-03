@@ -8,6 +8,7 @@ import com.groupfund.app.data.auth.GoogleAuthManager
 import com.groupfund.app.data.auth.OAuthConsentRequiredException
 import com.groupfund.app.data.registry.GroupEntry
 import com.groupfund.app.data.registry.GroupRegistry
+import com.groupfund.app.data.sheets.NotFoundException
 import com.groupfund.app.data.sheets.SheetsRepository
 import com.groupfund.app.notifications.BirthdayCheck
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -285,6 +286,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             _uiState.update { it.copy(transferBusy = true) }
+            // Новый ведущий сможет скопировать таблицу, только если у него есть чтение исходника.
+            // Открываем таблицу «по ссылке» (как при приглашении) — иначе приём у постороннего
+            // аккаунта падает с 404 «File not found».
+            repository.shareForInvite(entry.spreadsheetId)
+                .onFailure { e ->
+                    _uiState.update { s ->
+                        s.copy(
+                            transferBusy = false,
+                            error = "Не удалось открыть доступ к таблице для передачи: ${e.message ?: "ошибка"}",
+                        )
+                    }
+                    return@launch
+                }
             val code = randomTransferCode()
             repository.writeTransferPending(entry.spreadsheetId, code)
                 .onSuccess {
@@ -474,7 +488,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     _uiState.update { s ->
                         s.copy(
                             acceptBusy = false,
-                            error = e.message ?: "Не удалось принять передачу",
+                            error = if (e is NotFoundException) {
+                                "Исходная таблица недоступна. Попросите ведущего ещё раз нажать " +
+                                    "«Передать группу» — это откроет доступ по ссылке, и передачу " +
+                                    "можно будет принять."
+                            } else {
+                                e.message ?: "Не удалось принять передачу"
+                            },
                         )
                     }
                 }

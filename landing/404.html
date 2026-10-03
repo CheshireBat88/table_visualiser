@@ -3,20 +3,62 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GroupFund</title>
+  <title>Открыть группу</title>
   <style>
-    body { font-family: system-ui, sans-serif; max-width: 420px; margin: 48px auto; padding: 0 16px; text-align: center; color: #1a1a1a; }
-    button { font-size: 18px; padding: 14px 28px; border: 0; border-radius: 10px; background: #1a73e8; color: #fff; cursor: pointer; }
-    p { margin: 16px 0; }
-    .hint { font-size: 14px; color: #666; }
-    a { color: #1a73e8; }
+    :root {
+      --bg: #0d0e1a;
+      --card: #171a2e;
+      --border: #262a45;
+      --text: #e7e9f5;
+      --muted: #a2a7c4;
+      --accent: #7c5cff;
+      --accent-2: #4a6cf7;
+      --grad: linear-gradient(135deg, #7c5cff, #4a6cf7);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background:
+        radial-gradient(700px 420px at 85% -10%, rgba(124, 92, 255, .18), transparent 60%),
+        radial-gradient(600px 380px at -10% 110%, rgba(74, 108, 247, .14), transparent 60%),
+        var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      padding: 32px 16px;
+    }
+    .card {
+      width: 100%; max-width: 440px;
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 40px 32px;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, .35);
+    }
+    h2 { font-size: 24px; letter-spacing: -.01em; }
+    p { margin: 16px 0; font-size: 15px; color: var(--text); }
+    .hint { font-size: 13px; color: var(--muted); }
+    a { color: #8ea2ff; }
+    .btn {
+      font-size: 16px; font-weight: 600;
+      padding: 13px 30px; border: 0; border-radius: 999px; cursor: pointer;
+      color: #fff;
+      background: var(--grad);
+      box-shadow: 0 6px 20px rgba(124, 92, 255, .35);
+      transition: transform .15s, box-shadow .2s;
+    }
+    .btn:hover { transform: translateY(-1px); }
   </style>
 </head>
 <body>
-  <h2 id="title">Открыть GroupFund</h2>
-  <p id="subtitle">Сейчас откроем приложение. Если ничего не произошло — нажмите кнопку:</p>
-  <p><button id="open">Открыть в приложении</button></p>
-  <p class="hint">Если приложение не установлено или кнопка не работает — скачайте его и попробуйте снова, либо установите из Google Play.</p>
+  <div class="card">
+    <h2 id="title">Приглашение в группу GroupFund</h2>
+    <p id="subtitle">Сейчас откроем приложение. Если ничего не произошло — нажмите кнопку:</p>
+    <p><button class="btn" id="open">Открыть в приложении</button></p>
+    <p class="hint">Если приложение не установлено или кнопка не работает — скачайте его и попробуйте снова, либо установите из Google Play.</p>
+  </div>
   <script>
     var title = document.getElementById('title');
     var subtitle = document.getElementById('subtitle');
@@ -25,7 +67,6 @@
     var mInv = location.pathname.match(/^\/invite\/([^/]+)\/?$/);
     var mTr = location.pathname.match(/^\/transfer\/([^/]+)\/?$/);
     if (mInv) {
-      title.textContent = 'Приглашение в группу GroupFund';
       appUrl = 'groupfund://invite/' + decodeURIComponent(mInv[1]);
     } else if (mTr) {
       title.textContent = 'Передача группы GroupFund';
@@ -33,8 +74,8 @@
       appUrl = 'groupfund://transfer/' + decodeURIComponent(mTr[1]) + (code ? '?code=' + code : '');
     }
     if (appUrl) {
-      function tryOpen() { window.location = appUrl; }
-      window.addEventListener('load', function () { setTimeout(tryOpen, 400); });
+      function tryOpen() { if (appUrl) { window.location = appUrl; } }
+      window.addEventListener('load', function () { if (appUrl) { setTimeout(tryOpen, 400); } });
       btn.addEventListener('click', tryOpen);
     } else {
       title.textContent = 'Страница не найдена';

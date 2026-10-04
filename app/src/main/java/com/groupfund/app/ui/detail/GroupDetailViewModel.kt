@@ -853,11 +853,21 @@ class GroupDetailViewModel(
             result.fold(
                 onSuccess = { g ->
                     st.copy(
-                        busy = false,
+                        loading = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
                         title = displayTitle(g.title),
                     )
+                    // Автоматическая одноразовая стилизация «Сводки» (только для создателя)
+                    viewModelScope.launch {
+                        try {
+                            if (entry?.summaryStyled != true && entry?.role == "creator") {
+                                repository.applySummaryStyle(entry.spreadsheetId)
+                                entry?.let { registry.markSummaryStyled(it.id, true) }
+                            }
+                        } catch (_: Exception) {
+                        }
+                    }
                 },
                 onFailure = { e ->
                     if (e is OAuthConsentRequiredException) {

@@ -21,4 +21,6 @@ data class GroupEntry(
      * (удаляет старую таблицу с диска создателя).
      */
     val retiredSpreadsheetId: String? = null,
+    /** Автоматическая стилизация «Сводки» в Google-таблице уже применена один раз. */
+    val summaryStyled: Boolean = false,
 )

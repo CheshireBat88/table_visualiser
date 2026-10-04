@@ -413,16 +413,26 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      */
     suspend fun copySpreadsheetToMe(spreadsheetId: String): Result<GroupEntry> =
         withToken { sheets, drive, token ->
-            suspend fun attempt(): GroupEntry = copySpreadsheetOnce(sheets, drive, token, spreadsheetId)
-            try {
-                attempt()
-            } catch (e: retrofit2.HttpException) {
-                if (e.code() != 404) throw e
-                // Сразу после files.copy копия иногда ещё «не открыта» для чтения → 404.
-                // Один повтор после короткой паузы лечит это.
-                delay(1200)
-                attempt()
+            var lastError: Throwable? = null
+            repeat(3) { attemptIndex ->
+                try {
+                    return@withToken copySpreadsheetOnce(sheets, drive, token, spreadsheetId)
+                } catch (e: retrofit2.HttpException) {
+                    lastError = e
+                    if (e.code() != 404) throw e
+                    // Задержка распространения прав Google Drive — пробуем ещё раз.
+                    val delayMs = when (attemptIndex) {
+                        0 -> 1200L
+                        1 -> 2500L
+                        else -> 3500L
+                    }
+                    delay(delayMs)
+                } catch (e: Exception) {
+                    lastError = e
+                    throw e
+                }
             }
+            throw lastError ?: IllegalStateException("Не удалось скопировать таблицу")
         }
 
     /** Однократная попытка скопировать таблицу и проверить полноту копии. */

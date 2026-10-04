@@ -1601,4 +1601,25 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             collections = SheetCodec.parseCollections(raw["collections"].orEmpty()),
         )
     }
+
+    /** Однократное применение оформления «Сводки» (минимально) по текущим данным. */
+    suspend fun applySummaryStyle(spreadsheetId: String): Result<Unit> = withToken { sheets, _, token ->
+        val authHeader = "Bearer $token"
+        val group = readGroup(sheets, token, spreadsheetId)
+        val ids = sheetIds(sheets, authHeader, spreadsheetId)
+        val summary = SummaryCalculator.compute(group)
+        val summaryId = ids[Tabs.SUMMARY] ?: return@withToken Unit
+        val requests = SheetBeautifier.summaryRequests(summaryId, group, summary)
+        if (requests.isNotEmpty()) {
+            val resp = sheets.batchUpdateSpreadsheet(
+                authHeader,
+                spreadsheetId,
+                SpreadsheetBatchUpdateRequest(requests = requests),
+            )
+            if (!resp.isSuccessful) {
+                Log.w("GroupFund", "applySummaryStyle http ${resp.code()}: ${resp.errorBody()?.string()}")
+            }
+        }
+        Unit
+    }
 }

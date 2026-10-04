@@ -863,7 +863,7 @@ private fun GroupsContent(
             }
         }
         LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(withUniqueLabels(state.groups), key = { it.entry.id }) { dg ->
+            items(withUniqueLabels(state.groups.filter { !it.unavailable }), key = { it.entry.id }) { dg ->
                 GroupCard(
                     entry = dg.entry,
                     label = dg.label,

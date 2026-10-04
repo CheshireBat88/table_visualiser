@@ -350,15 +350,31 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     suspend fun readTransferMarker(spreadsheetId: String): Result<TransferMarker> =
         withToken { sheets, _, token ->
             val authHeader = "Bearer $token"
-            val rows = runCatching {
-                sheets.getValues(authHeader, spreadsheetId, TRANSFER_MARKER_RANGE).values.orEmpty()
-            }.getOrDefault(emptyList())
-            fun cell(row: Int, col: Int): String =
-                rows.getOrNull(row)?.getOrNull(col)?.let { it.toString() }?.trim().orEmpty()
-            TransferMarker(
-                pendingCode = cell(0, 1).ifEmpty { null },
-                newSpreadsheetId = cell(1, 1).ifEmpty { null },
-            )
+            var lastError: Throwable? = null
+            repeat(3) { attemptIndex ->
+                try {
+                    val rows = sheets.getValues(authHeader, spreadsheetId, TRANSFER_MARKER_RANGE).values.orEmpty()
+                    fun cell(row: Int, col: Int): String =
+                        rows.getOrNull(row)?.getOrNull(col)?.let { it.toString() }?.trim().orEmpty()
+                    return@withToken TransferMarker(
+                        pendingCode = cell(0, 1).ifEmpty { null },
+                        newSpreadsheetId = cell(1, 1).ifEmpty { null },
+                    )
+                } catch (e: retrofit2.HttpException) {
+                    lastError = e
+                    if (e.code() != 404) break
+                    val delayMs = if (attemptIndex == 0) 800L else 1500L
+                    delay(delayMs)
+                } catch (e: NotFoundException) {
+                    lastError = e
+                    val delayMs = if (attemptIndex == 0) 800L else 1500L
+                    delay(delayMs)
+                } catch (e: Exception) {
+                    lastError = e
+                    break
+                }
+            }
+            TransferMarker(null, null)
         }
 
     /** Пишет код передачи (создатель инициирует передачу; нужна запись в таблице). */

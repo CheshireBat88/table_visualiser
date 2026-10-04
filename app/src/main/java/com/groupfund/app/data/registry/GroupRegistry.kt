@@ -94,6 +94,16 @@ class GroupRegistry(private val context: Context) {
         }
     }
 
+    /** Отмечает, что стилизация «Сводки» в таблице уже применена один раз. */
+    suspend fun markSummaryStyled(id: String, styled: Boolean) {
+        context.groupDataStore.edit { prefs ->
+            val current = prefs[groupsKey]?.let { deserialize(it) } ?: return@edit
+            prefs[groupsKey] = serialize(
+                current.map { entry -> if (entry.id == id) entry.copy(summaryStyled = styled) else entry },
+            )
+        }
+    }
+
     /**
      * Меняет запись группы по старому spreadsheetId (копия при передаче, авто-переключение).
      * Если группы с таким id нет — просто ничего не меняет (пустая операция).

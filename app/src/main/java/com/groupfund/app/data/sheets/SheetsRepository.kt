@@ -222,12 +222,12 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         )
 
         val values = mutableListOf(
-            ValueRange("${Tabs.SETTINGS}!A1:C40", SheetCodec.settingsRows(draft.title, draft.baseAmount, draft.currency, SheetCodec.today(), draft.months)),
-            ValueRange("${Tabs.MEMBERS}!A1:H200", SheetCodec.membersRows(emptyGroup.members)),
-            ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsHeader()),
-            ValueRange("${Tabs.EXPENSES}!A1:E1000", SheetCodec.expensesHeader()),
+            ValueRange("${Tabs.SETTINGS}!A1:C80", SheetCodec.settingsRows(draft.title, draft.baseAmount, draft.currency, SheetCodec.today(), draft.months)),
+            ValueRange("${Tabs.MEMBERS}!A1:H500", SheetCodec.membersRows(emptyGroup.members)),
+            ValueRange("${Tabs.PAYMENTS}!A1:D5000", SheetCodec.paymentsHeader()),
+            ValueRange("${Tabs.EXPENSES}!A1:E5000", SheetCodec.expensesHeader()),
             ValueRange(
-                "${Tabs.SUMMARY}!A1:R100",
+                "${Tabs.SUMMARY}!A1:R500",
                 SummaryCalculator.emptySummaryRows(emptyGroup, draft.months),
             ),
         )

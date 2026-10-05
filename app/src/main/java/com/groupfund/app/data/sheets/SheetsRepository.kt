@@ -59,6 +59,13 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         /** Маркер передачи в листе «Настройки»: E1:F1 — код передачи, E2:F2 — id копии. */
         val TRANSFER_MARKER_RANGE = "${Tabs.SETTINGS}!E1:F2"
         const val TRANSFER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+        /** Потолки только на ЧТЕНИЕ: сколько строк запрашиваем, если данных больше не придумать. */
+        const val READ_SETTINGS_ROWS = 500
+        const val READ_MEMBERS_ROWS = 2000
+        const val READ_LEDGER_ROWS = 50000
+        /** Сколько пустых строк под данными сносим при полной перезаписи листа. */
+        const val CLEAR_TAIL_ROWS = 300
     }
 
     private val sheetsApi: SheetsApiService by lazy {
@@ -222,12 +229,12 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         )
 
         val values = mutableListOf(
-            ValueRange("${Tabs.SETTINGS}!A1:C80", SheetCodec.settingsRows(draft.title, draft.baseAmount, draft.currency, SheetCodec.today(), draft.months)),
-            ValueRange("${Tabs.MEMBERS}!A1:H500", SheetCodec.membersRows(emptyGroup.members)),
-            ValueRange("${Tabs.PAYMENTS}!A1:D5000", SheetCodec.paymentsHeader()),
-            ValueRange("${Tabs.EXPENSES}!A1:E5000", SheetCodec.expensesHeader()),
-            ValueRange(
-                "${Tabs.SUMMARY}!A1:R500",
+            vrange(Tabs.SETTINGS, SheetCodec.settingsRows(draft.title, draft.baseAmount, draft.currency, SheetCodec.today(), draft.months)),
+            vrange(Tabs.MEMBERS, SheetCodec.membersRows(emptyGroup.members)),
+            vrange(Tabs.PAYMENTS, SheetCodec.paymentsHeader()),
+            vrange(Tabs.EXPENSES, SheetCodec.expensesHeader()),
+            vrange(
+                Tabs.SUMMARY,
                 SummaryCalculator.emptySummaryRows(emptyGroup, draft.months),
             ),
         )
@@ -572,8 +579,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(updated.payments)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, summary)),
+                vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(updated.payments)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
             ),
         )
         updated
@@ -635,8 +642,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange(
-                    "${Tabs.COLLECTIONS}!A1:F1000",
+                vrange(
+                    Tabs.COLLECTIONS,
                     SheetCodec.collectionsRows(updated.collections),
                 ),
             ),
@@ -690,9 +697,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.COLLECTIONS}!A1:F1000", SheetCodec.collectionsRows(newCollections)),
-                ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(newPayments)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, newSummary)),
+                vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(newCollections)),
+                vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(newPayments)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, newSummary)),
             ),
         )
         updated
@@ -723,9 +730,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.COLLECTIONS}!A1:F1000", SheetCodec.collectionsRows(newCollections)),
-                ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(newPayments)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, newSummary)),
+                vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(newCollections)),
+                vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(newPayments)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, newSummary)),
             ),
         )
         updated
@@ -766,9 +773,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.COLLECTIONS}!A1:F1000", SheetCodec.collectionsRows(collections)),
-                ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(payments)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, newSummary)),
+                vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(collections)),
+                vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(payments)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, newSummary)),
             ),
         )
         updated
@@ -843,9 +850,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.COLLECTIONS}!A1:F1000", SheetCodec.collectionsRows(newCollections)),
-                ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(newPayments)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, newSummary)),
+                vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(newCollections)),
+                vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(newPayments)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, newSummary)),
             ),
         )
         updated
@@ -892,9 +899,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.COLLECTIONS}!A1:F1000", SheetCodec.collectionsRows(newCollections)),
-                ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(newPayments)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, newSummary)),
+                vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(newCollections)),
+                vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(newPayments)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, newSummary)),
             ),
         )
         updated
@@ -966,8 +973,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.MEMBERS}!A1:H200", SheetCodec.membersRows(updatedMembers)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, newSummary)),
+                vrange(Tabs.MEMBERS, SheetCodec.membersRows(updatedMembers)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, newSummary)),
             ),
         )
         updated
@@ -1026,13 +1033,13 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val newSummary = SummaryCalculator.compute(updatedGroup)
 
         val data = mutableListOf(
-            ValueRange("${Tabs.MEMBERS}!A1:H200", SheetCodec.membersRows(newMembers)),
-            ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updatedGroup, newSummary)),
+            vrange(Tabs.MEMBERS, SheetCodec.membersRows(newMembers)),
+            vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updatedGroup, newSummary)),
         )
         if (renamed) {
-            data.add(ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(newPayments)))
-            data.add(ValueRange("${Tabs.EXPENSES}!A1:E1000", SheetCodec.expensesRows(newExpenses)))
-            data.add(ValueRange("${Tabs.COLLECTIONS}!A1:F1000", SheetCodec.collectionsRows(newCollections)))
+            data.add(vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(newPayments)))
+            data.add(vrange(Tabs.EXPENSES, SheetCodec.expensesRows(newExpenses)))
+            data.add(vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(newCollections)))
         }
         writeData(sheets, authHeader, spreadsheetId, updatedGroup, data)
         updatedGroup
@@ -1056,8 +1063,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                 spreadsheetId,
                 updated,
                 listOf(
-                    ValueRange(
-                        "${Tabs.SETTINGS}!A1:C40",
+                    vrange(
+                        Tabs.SETTINGS,
                         SheetCodec.settingsRows(
                             group.title,
                             group.baseAmount,
@@ -1066,7 +1073,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                             sorted,
                         ),
                     ),
-                    ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, summary)),
+                    vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
                 ),
             )
             updated
@@ -1103,8 +1110,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                 spreadsheetId,
                 updated,
                 listOf(
-                    ValueRange("${Tabs.MEMBERS}!A1:H200", SheetCodec.membersRows(updated.members)),
-                    ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, summary)),
+                    vrange(Tabs.MEMBERS, SheetCodec.membersRows(updated.members)),
+                    vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
                 ),
             )
             updated
@@ -1136,8 +1143,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.EXPENSES}!A1:E1000", SheetCodec.expensesRows(updated.expenses)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, summary)),
+                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
             ),
         )
         updated
@@ -1179,8 +1186,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(updated.payments)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, summary)),
+                vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(updated.payments)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
             ),
         )
         updated
@@ -1219,8 +1226,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.EXPENSES}!A1:E1000", SheetCodec.expensesRows(updated.expenses)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, summary)),
+                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
             ),
         )
         updated
@@ -1277,11 +1284,11 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val updated = group.copy(collections = collections, payments = remaining)
         val summary = SummaryCalculator.compute(updated)
         val changes = mutableListOf(
-            ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(updated.payments)),
-            ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, summary)),
+            vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(updated.payments)),
+            vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
         )
         if (updatedCollection != null) {
-            changes.add(ValueRange("${Tabs.COLLECTIONS}!A1:F1000", SheetCodec.collectionsRows(updated.collections)))
+            changes.add(vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(updated.collections)))
         }
         writeData(
             sheets,
@@ -1314,8 +1321,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.EXPENSES}!A1:E1000", SheetCodec.expensesRows(updated.expenses)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, summary)),
+                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
             ),
         )
         updated
@@ -1347,9 +1354,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                ValueRange("${Tabs.COLLECTIONS}!A1:F1000", SheetCodec.collectionsRows(newCollections)),
-                ValueRange("${Tabs.PAYMENTS}!A1:D1000", SheetCodec.paymentsRows(newPayments)),
-                ValueRange("${Tabs.SUMMARY}!A1:R100", SummaryCalculator.summaryRows(updated, newSummary)),
+                vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(newCollections)),
+                vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(newPayments)),
+                vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, newSummary)),
             ),
         )
         updated
@@ -1414,14 +1421,12 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         group: GroupData,
         data0: List<ValueRange>,
     ) {
-        val paymentsKey = "${Tabs.PAYMENTS}!A1:D1000"
-        val collectionsKey = "${Tabs.COLLECTIONS}!A1:F1000"
         val data = data0.map { range ->
-            when (range.range) {
-                paymentsKey -> range.copy(
+            when (range.range.substringBefore('!')) {
+                Tabs.PAYMENTS -> range.copy(
                     values = SheetCodec.paymentsRows(sanitizeCollectionPayments(group.payments, group.collections)),
                 )
-                collectionsKey -> range.copy(
+                Tabs.COLLECTIONS -> range.copy(
                     values = SheetCodec.collectionsRows(group.collections.distinctBy { it.name }),
                 )
                 else -> range
@@ -1446,8 +1451,12 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             }
             val lastRow = a1.startRow + rows - 1
             bounded += range.copy(range = "${a1.sheet}!${a1.startCol}${a1.startRow}:${a1.endCol}$lastRow")
-            if (lastRow < a1.endRow) {
-                tails += "${a1.sheet}!${a1.startCol}${lastRow + 1}:${a1.endCol}${a1.endRow}"
+            // Полная перезапись листа всегда начинается с A1: тогда за ней надо снести хвост,
+            // иначе удалённые строки (убранный платёж, вышедший участник) останутся в таблице.
+            val fullSheet = a1.startCol == "A" && a1.startRow == 1
+            val clearEnd = if (fullSheet) maxOf(a1.endRow, lastRow + CLEAR_TAIL_ROWS) else a1.endRow
+            if (clearEnd > lastRow) {
+                tails += "${a1.sheet}!${a1.startCol}${lastRow + 1}:${a1.endCol}$clearEnd"
             }
         }
         if (bounded.isNotEmpty()) {
@@ -1531,11 +1540,11 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     ): GroupData {
         val authHeader = "Bearer $token"
         val ranges = listOf(
-            "settings" to "${Tabs.SETTINGS}!A1:C40",
-            "members" to "${Tabs.MEMBERS}!A1:H200",
-            "payments" to "${Tabs.PAYMENTS}!A1:D1000",
-            "expenses" to "${Tabs.EXPENSES}!A1:E1000",
-            "collections" to "${Tabs.COLLECTIONS}!A1:F1000",
+            "settings" to "${Tabs.SETTINGS}!A1:C$READ_SETTINGS_ROWS",
+            "members" to "${Tabs.MEMBERS}!A1:H$READ_MEMBERS_ROWS",
+            "payments" to "${Tabs.PAYMENTS}!A1:D$READ_LEDGER_ROWS",
+            "expenses" to "${Tabs.EXPENSES}!A1:E$READ_LEDGER_ROWS",
+            "collections" to "${Tabs.COLLECTIONS}!A1:F$READ_LEDGER_ROWS",
         )
         // Все листы одним batchGet — 1 запрос вместо 5 (экономит квоту чтения 60/мин).
         // Если листа «Сборы» нет (старые таблицы) — batchGet падает, читаем по отдельности.
@@ -1552,12 +1561,12 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             ranges.indices.associate { i -> ranges[i].first to (values[i].values.orEmpty()) }
         }.getOrElse {
             mapOf(
-                "settings" to (sheets.getValues(authHeader, spreadsheetId, "${Tabs.SETTINGS}!A1:C40").values ?: emptyList()),
-                "members" to (sheets.getValues(authHeader, spreadsheetId, "${Tabs.MEMBERS}!A1:H200").values ?: emptyList()),
-                "payments" to (sheets.getValues(authHeader, spreadsheetId, "${Tabs.PAYMENTS}!A1:D1000").values ?: emptyList()),
-                "expenses" to (sheets.getValues(authHeader, spreadsheetId, "${Tabs.EXPENSES}!A1:E1000").values ?: emptyList()),
+                "settings" to (sheets.getValues(authHeader, spreadsheetId, ranges[0].second).values ?: emptyList()),
+                "members" to (sheets.getValues(authHeader, spreadsheetId, ranges[1].second).values ?: emptyList()),
+                "payments" to (sheets.getValues(authHeader, spreadsheetId, ranges[2].second).values ?: emptyList()),
+                "expenses" to (sheets.getValues(authHeader, spreadsheetId, ranges[3].second).values ?: emptyList()),
                 "collections" to runCatching {
-                    sheets.getValues(authHeader, spreadsheetId, "${Tabs.COLLECTIONS}!A1:F1000").values ?: emptyList()
+                    sheets.getValues(authHeader, spreadsheetId, ranges[4].second).values ?: emptyList()
                 }.getOrDefault(emptyList()),
             )
         }
@@ -1576,4 +1585,25 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             collections = SheetCodec.parseCollections(raw["collections"].orEmpty()),
         )
     }
+}
+
+/** Имя колонки по индексу: 1 → A, 26 → Z, 27 → AA. */
+internal fun colName(idx: Int): String {
+    var n = idx
+    val sb = StringBuilder()
+    while (n > 0) {
+        sb.insert(0, ('A' + (n - 1) % 26))
+        n = (n - 1) / 26
+    }
+    return if (sb.isEmpty()) "A" else sb.toString()
+}
+
+/**
+ * Диапазон записи ровно под размер данных: жёсткого потолка нет, таблица растёт
+ * вместе с числом строк. Хвост за последней строкой чистит writeData.
+ */
+internal fun vrange(tab: String, values: List<List<Any?>>): ValueRange {
+    val cols = values.maxOfOrNull { it.size } ?: 1
+    val rows = values.size.coerceAtLeast(1)
+    return ValueRange("$tab!A1:${colName(cols)}$rows", values)
 }

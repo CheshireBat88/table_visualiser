@@ -188,7 +188,7 @@ object SheetBeautifier {
         return req
     }
 
-    private fun summaryRequests(
+    internal fun summaryRequests(
         sheetId: Int,
         group: GroupData,
         summary: GroupSummary,

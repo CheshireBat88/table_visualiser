@@ -391,6 +391,10 @@ class GroupDetailViewModel(
             result.fold(
                 onSuccess = { g ->
                     entry.let { registry.setUnavailable(it.id, false) }
+                    if (!entry.summaryStyled && entry.role == "creator") {
+                        runCatching { repository.applySummaryStyle(entry.spreadsheetId) }
+                            .onSuccess { registry.markSummaryStyled(entry.id, true) }
+                    }
                     st.copy(
                         loading = false,
                         group = g,

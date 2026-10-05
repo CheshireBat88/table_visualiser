@@ -2,11 +2,14 @@ package com.groupfund.app.ui.detail
 
 import android.app.Application
 import android.content.Intent
+import android.graphics.Bitmap
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
 import com.groupfund.app.data.auth.GoogleAuthManager
 import com.groupfund.app.data.auth.OAuthConsentRequiredException
+import com.groupfund.app.data.export.SummaryImageRenderer
 import com.groupfund.app.data.registry.GroupEntry
 import com.groupfund.app.data.registry.GroupRegistry
 import com.groupfund.app.data.sheets.GroupData
@@ -18,11 +21,15 @@ import com.groupfund.app.data.sheets.SheetsRepository
 import com.groupfund.app.data.sheets.SummaryCalculator
 import com.groupfund.app.data.sheets.isCollectionPayment
 import com.groupfund.app.data.sheets.money
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.io.FileOutputStream
 
 data class GroupDetailUiState(
     val loading: Boolean = false,
@@ -125,6 +132,51 @@ class GroupDetailViewModel(
         if (_uiState.value.busy) return
         lastAction = { doLoad() }
         runLast()
+    }
+
+    /** Рисует сводку в PNG и открывает системный диалог «Поделиться». */
+    fun exportSummaryPng() {
+        val st = _uiState.value
+        val g = st.group
+        val s = st.summary
+        if (g == null || s == null || st.busy) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(busy = true) }
+            try {
+                val file = withContext(Dispatchers.IO) {
+                    val bmp = SummaryImageRenderer.render(g, s)
+                    val app = getApplication<Application>()
+                    val dir = File(app.cacheDir, "export").apply { mkdirs() }
+                    dir.listFiles()?.forEach { it.delete() }
+                    val safe = g.title
+                        .replace(Regex("[^\\p{L}\\p{N} _-]"), " ")
+                        .trim()
+                        .replace(Regex("\\s+"), "_")
+                        .take(48)
+                        .ifEmpty { "group" }
+                    val f = File(dir, "$safe.png")
+                    FileOutputStream(f).use { out ->
+                        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+                    }
+                    bmp.recycle()
+                    f
+                }
+                val app = getApplication<Application>()
+                val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
+                val send = Intent(Intent.ACTION_SEND).apply {
+                    type = "image/png"
+                    putExtra(Intent.EXTRA_STREAM, uri)
+                    putExtra(Intent.EXTRA_SUBJECT, g.title)
+                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                }
+                app.startActivity(Intent.createChooser(send, "Поделиться сводкой"))
+                _uiState.update { it.copy(busy = false) }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(busy = false, error = "Не удалось сохранить сводку: ${e.message}")
+                }
+            }
+        }
     }
 
     fun deleteGroup() {

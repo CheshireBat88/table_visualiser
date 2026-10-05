@@ -213,32 +213,37 @@ object SummaryCalculator {
             }
         }
 
-        val removed = group.members.filter { !it.active }
-        if (removed.isNotEmpty()) {
-            val expenseShares = fairExpenseShares(group.expenses, group.members.map { it.name })
-            val paid = group.payments
-                .groupBy { it.member }
-                .mapValues { (_, ps) ->
-                    ps.filterNot { it.comment.startsWith(REFUND_TAG_PREFIX) }.sumOf { it.amount } -
-                        ps.filter { it.comment.startsWith(REFUND_TAG_PREFIX) }.sumOf { it.amount }
-                }
+        val excluded = excludedRows(group)
+        if (excluded.isNotEmpty()) {
             rows.add(emptyList())
             rows.add(listOf("ИСКЛЮЧЁННЫЕ: внесено − доля расходов = возврат"))
             rows.add(listOf("Имя", "Внесено", "Доля расходов", "Возврат"))
-            removed.forEach { m ->
-                val totalPaid = round2(paid[m.name] ?: 0.0)
-                val expenseShare = round2(expenseShares[m.name] ?: 0.0)
-                rows.add(
-                    listOf(
-                        m.name,
-                        money(totalPaid),
-                        money(expenseShare),
-                        money(round2(totalPaid - expenseShare)),
-                    ),
-                )
-            }
+            excluded.forEach { rows.add(it) }
         }
         return rows
+    }
+
+    /** Строки по исключённым участникам: имя, внесено, доля расходов, возврат. */
+    fun excludedRows(group: GroupData): List<List<Any?>> {
+        val removed = group.members.filter { !it.active }
+        if (removed.isEmpty()) return emptyList()
+        val expenseShares = fairExpenseShares(group.expenses, group.members.map { it.name })
+        val paid = group.payments
+            .groupBy { it.member }
+            .mapValues { (_, ps) ->
+                ps.filterNot { it.comment.startsWith(REFUND_TAG_PREFIX) }.sumOf { it.amount } -
+                    ps.filter { it.comment.startsWith(REFUND_TAG_PREFIX) }.sumOf { it.amount }
+            }
+        return removed.map { m ->
+            val totalPaid = round2(paid[m.name] ?: 0.0)
+            val expenseShare = round2(expenseShares[m.name] ?: 0.0)
+            listOf<Any?>(
+                m.name,
+                money(totalPaid),
+                money(expenseShare),
+                money(round2(totalPaid - expenseShare)),
+            )
+        }
     }
 
     /** Сводная матрица для пустой группы (только что созданной). */

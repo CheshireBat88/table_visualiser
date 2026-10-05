@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.QrCode
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.outlined.PersonRemove
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -263,6 +264,12 @@ actions = {
                         }
                     }) {
                         Icon(Icons.Default.ContentCopy, "Клонировать группу")
+                    }
+                    IconButton(
+                        onClick = { viewModel.exportSummaryPng() },
+                        enabled = state.group != null && state.summary != null && !state.busy,
+                    ) {
+                        Icon(Icons.Default.Share, "Экспорт сводки в PNG")
                     }
                     IconButton(onClick = { showDeleteConfirm = true }) {
                         Icon(Icons.Default.Delete, "Удалить группу")

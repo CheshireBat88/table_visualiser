@@ -3036,9 +3036,6 @@ private fun ExpensesTab(
                         Modifier.padding(12.dp),
                         verticalArrangement = Arrangement.spacedBy(6.dp),
                     ) {
-                        val balances = remember(summary) {
-                            summary.rows.associate { it.member.name to it.balance }
-                        }
                         group.expenses
                             .mapIndexed { i, e -> IndexedValue(i, e) }
                             .asReversed()
@@ -3059,20 +3056,20 @@ private fun ExpensesTab(
                                     )
                                     Spacer(Modifier.height(4.dp))
                                     e.participants.sorted().forEach { name ->
-                                        val bal = balances[name] ?: 0.0
-                                        val paid = bal >= e.averageShare - 0.005
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             modifier = Modifier.padding(start = 4.dp),
                                         ) {
-                                            Icon(
-                                                imageVector = if (paid) Icons.Default.Check else Icons.Default.Close,
-                                                contentDescription = null,
-                                                tint = if (paid) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                                                modifier = Modifier.size(16.dp),
+                                            Text(
+                                                name,
+                                                style = MaterialTheme.typography.bodySmall,
+                                                modifier = Modifier.weight(1f),
                                             )
-                                            Spacer(Modifier.width(6.dp))
-                                            Text(name, style = MaterialTheme.typography.bodySmall)
+                                            Text(
+                                                "${money(e.averageShare)} ${currencySymbol(group.currency)}",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                            )
                                         }
                                     }
                                     Spacer(Modifier.height(4.dp))

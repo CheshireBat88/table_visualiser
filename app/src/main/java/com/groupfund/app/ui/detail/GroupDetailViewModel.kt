@@ -142,8 +142,8 @@ class GroupDetailViewModel(
         if (g == null || s == null || st.busy) return
         viewModelScope.launch {
             _uiState.update { it.copy(busy = true) }
-            try {
-                val file = withContext(Dispatchers.IO) {
+            val file = try {
+                withContext(Dispatchers.IO) {
                     val bmp = SummaryImageRenderer.render(g, s)
                     val app = getApplication<Application>()
                     val dir = File(app.cacheDir, "export").apply { mkdirs() }
@@ -161,6 +161,13 @@ class GroupDetailViewModel(
                     bmp.recycle()
                     f
                 }
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(busy = false, error = "Не удалось сохранить сводку: ${e.message}")
+                }
+                return@launch
+            }
+            try {
                 val app = getApplication<Application>()
                 val uri = FileProvider.getUriForFile(app, "${app.packageName}.fileprovider", file)
                 val send = Intent(Intent.ACTION_SEND).apply {
@@ -169,11 +176,14 @@ class GroupDetailViewModel(
                     putExtra(Intent.EXTRA_SUBJECT, g.title)
                     addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 }
-                app.startActivity(Intent.createChooser(send, "Поделиться сводкой"))
+                val chooser = Intent.createChooser(send, "Поделиться сводкой").apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                app.startActivity(chooser)
                 _uiState.update { it.copy(busy = false) }
             } catch (e: Exception) {
                 _uiState.update {
-                    it.copy(busy = false, error = "Не удалось сохранить сводку: ${e.message}")
+                    it.copy(busy = false, error = "Картинка сохранена, но отправить не вышло: ${e.message}")
                 }
             }
         }

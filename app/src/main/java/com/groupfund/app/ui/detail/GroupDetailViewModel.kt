@@ -391,10 +391,6 @@ class GroupDetailViewModel(
             result.fold(
                 onSuccess = { g ->
                     entry.let { registry.setUnavailable(it.id, false) }
-                    if (!entry.summaryStyled && entry.role == "creator") {
-                        runCatching { repository.applySummaryStyle(entry.spreadsheetId) }
-                            .onSuccess { registry.markSummaryStyled(entry.id, true) }
-                    }
                     st.copy(
                         loading = false,
                         group = g,
@@ -857,21 +853,11 @@ class GroupDetailViewModel(
             result.fold(
                 onSuccess = { g ->
                     st.copy(
-                        loading = false,
+                        busy = false,
                         group = g,
                         summary = SummaryCalculator.compute(g),
                         title = displayTitle(g.title),
                     )
-                    // Автоматическая одноразовая стилизация «Сводки» (только для создателя)
-                    viewModelScope.launch {
-                        try {
-                            if (entry?.summaryStyled != true && entry?.role == "creator") {
-                                repository.applySummaryStyle(entry.spreadsheetId)
-                                entry?.let { registry.markSummaryStyled(it.id, true) }
-                            }
-                        } catch (_: Exception) {
-                        }
-                    }
                 },
                 onFailure = { e ->
                     if (e is OAuthConsentRequiredException) {

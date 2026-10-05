@@ -350,31 +350,15 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     suspend fun readTransferMarker(spreadsheetId: String): Result<TransferMarker> =
         withToken { sheets, _, token ->
             val authHeader = "Bearer $token"
-            var lastError: Throwable? = null
-            repeat(3) { attemptIndex ->
-                try {
-                    val rows = sheets.getValues(authHeader, spreadsheetId, TRANSFER_MARKER_RANGE).values.orEmpty()
-                    fun cell(row: Int, col: Int): String =
-                        rows.getOrNull(row)?.getOrNull(col)?.let { it.toString() }?.trim().orEmpty()
-                    return@withToken TransferMarker(
-                        pendingCode = cell(0, 1).ifEmpty { null },
-                        newSpreadsheetId = cell(1, 1).ifEmpty { null },
-                    )
-                } catch (e: retrofit2.HttpException) {
-                    lastError = e
-                    if (e.code() != 404) break
-                    val delayMs = if (attemptIndex == 0) 800L else 1500L
-                    delay(delayMs)
-                } catch (e: NotFoundException) {
-                    lastError = e
-                    val delayMs = if (attemptIndex == 0) 800L else 1500L
-                    delay(delayMs)
-                } catch (e: Exception) {
-                    lastError = e
-                    break
-                }
-            }
-            TransferMarker(null, null)
+            val rows = runCatching {
+                sheets.getValues(authHeader, spreadsheetId, TRANSFER_MARKER_RANGE).values.orEmpty()
+            }.getOrDefault(emptyList())
+            fun cell(row: Int, col: Int): String =
+                rows.getOrNull(row)?.getOrNull(col)?.let { it.toString() }?.trim().orEmpty()
+            TransferMarker(
+                pendingCode = cell(0, 1).ifEmpty { null },
+                newSpreadsheetId = cell(1, 1).ifEmpty { null },
+            )
         }
 
     /** Пишет код передачи (создатель инициирует передачу; нужна запись в таблице). */
@@ -430,28 +414,17 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     suspend fun copySpreadsheetToMe(spreadsheetId: String): Result<GroupEntry> =
         withToken { sheets, drive, token ->
             var lastError: Throwable? = null
-            repeat(5) { attemptIndex ->
+            repeat(3) { attemptIndex ->
                 try {
                     return@withToken copySpreadsheetOnce(sheets, drive, token, spreadsheetId)
                 } catch (e: retrofit2.HttpException) {
                     lastError = e
                     if (e.code() != 404) throw e
+                    // Задержка распространения прав Google Drive — пробуем ещё раз.
                     val delayMs = when (attemptIndex) {
-                        0 -> 1500L
-                        1 -> 3000L
-                        2 -> 5000L
-                        3 -> 7000L
-                        else -> 9000L
-                    }
-                    delay(delayMs)
-                } catch (e: NotFoundException) {
-                    lastError = e
-                    val delayMs = when (attemptIndex) {
-                        0 -> 1500L
-                        1 -> 3000L
-                        2 -> 5000L
-                        3 -> 7000L
-                        else -> 9000L
+                        0 -> 1200L
+                        1 -> 2500L
+                        else -> 3500L
                     }
                     delay(delayMs)
                 } catch (e: Exception) {
@@ -460,6 +433,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                 }
             }
             throw lastError ?: IllegalStateException("Не удалось скопировать таблицу")
+        }
+
     /** Однократная попытка скопировать таблицу и проверить полноту копии. */
     private suspend fun copySpreadsheetOnce(
         sheets: SheetsApiService,
@@ -1600,26 +1575,5 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             expenses = SheetCodec.parseExpenses(raw["expenses"].orEmpty()),
             collections = SheetCodec.parseCollections(raw["collections"].orEmpty()),
         )
-    }
-
-    /** Однократное применение оформления «Сводки» (минимально) по текущим данным. */
-    suspend fun applySummaryStyle(spreadsheetId: String): Result<Unit> = withToken { sheets, _, token ->
-        val authHeader = "Bearer $token"
-        val group = readGroup(sheets, token, spreadsheetId)
-        val ids = sheetIds(sheets, authHeader, spreadsheetId)
-        val summary = SummaryCalculator.compute(group)
-        val summaryId = ids[Tabs.SUMMARY] ?: return@withToken Unit
-        val requests = SheetBeautifier.summaryRequests(summaryId, group, summary)
-        if (requests.isNotEmpty()) {
-            val resp = sheets.batchUpdateSpreadsheet(
-                authHeader,
-                spreadsheetId,
-                SpreadsheetBatchUpdateRequest(requests = requests),
-            )
-            if (!resp.isSuccessful) {
-                Log.w("GroupFund", "applySummaryStyle http ${resp.code()}: ${resp.errorBody()?.string()}")
-            }
-        }
-        Unit
     }
 }

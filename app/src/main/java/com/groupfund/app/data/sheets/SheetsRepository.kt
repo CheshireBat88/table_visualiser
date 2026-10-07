@@ -103,7 +103,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      * Повтор безопасен, только если запись не оставляет лист в промежуточном пустом
      * состоянии — поэтому writeData пишет данные ДО очистки «хвостов» (см. ниже).
      */
-    private suspend fun <T> withToken(
+    internal suspend fun <T> withToken(
         retryOn429: Boolean = true,
         block: suspend (SheetsApiService, DriveApiService, String) -> T,
     ): Result<T> {

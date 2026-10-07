@@ -58,4 +58,10 @@ class GroupIndexCodecTest {
         assertEquals("", parsed.account)
         assertTrue(parsed.entries.isEmpty())
     }
+
+    @Test
+    fun `хвост чистится со строки сразу за данными`() {
+        assertEquals("$INDEX_SHEET!A5:Z$INDEX_CLEAR_ROWS", indexClearRange(4))
+        assertEquals("$INDEX_SHEET!A2:Z$INDEX_CLEAR_ROWS", indexClearRange(1))
+    }
 }

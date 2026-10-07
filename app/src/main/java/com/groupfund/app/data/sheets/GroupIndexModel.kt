@@ -15,6 +15,9 @@ package com.groupfund.app.data.sheets
 /** Имя листа внутри файла-индекса. */
 const val INDEX_SHEET = "Индекс"
 
+/** Имя самого файла индекса на Диске (видно только его владельцу). */
+const val INDEX_FILE_TITLE = "GroupFund — индекс таблиц"
+
 /** Метка в appProperties: файл — индекс, а не группа. */
 const val INDEX_MARKER_KEY = "groupfund.index"
 const val INDEX_MARKER_VALUE = "1"

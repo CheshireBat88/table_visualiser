@@ -8,7 +8,10 @@ import com.groupfund.app.data.auth.GoogleAuthManager
 import com.groupfund.app.data.auth.OAuthConsentRequiredException
 import com.groupfund.app.data.registry.GroupEntry
 import com.groupfund.app.data.registry.GroupRegistry
+import com.groupfund.app.data.sheets.GroupIndexRepository
+import com.groupfund.app.data.sheets.IndexEntry
 import com.groupfund.app.data.sheets.NotFoundException
+import com.groupfund.app.data.sheets.SheetCodec
 import com.groupfund.app.data.sheets.SheetsRepository
 import com.groupfund.app.notifications.BirthdayCheck
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -17,6 +20,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 
 data class MainUiState(
     val isSignedIn: Boolean = false,
@@ -61,6 +65,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val auth = GoogleAuthManager(app)
     private val registry = GroupRegistry(app)
     private val repository = SheetsRepository(auth)
+    private val indexRepository = GroupIndexRepository(repository)
+
+    /**
+     * Индекс прочитан для текущего аккаунта. Пока false — в файл писать нельзя:
+     * незаполненный реестр (новое устройство) затёр бы записи о чужих группах.
+     */
+    private var indexReady = false
+
+    /** Последний снимок, отправленный в индекс, — чтобы не перезаписывать без изменений. */
+    private var lastSyncedIndex: List<IndexEntry> = emptyList()
 
     private val _uiState = MutableStateFlow(MainUiState())
     val uiState: StateFlow<MainUiState> = _uiState.asStateFlow()
@@ -76,6 +90,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             registry.groups.collect { groups ->
                 _uiState.update { it.copy(groups = groups) }
+                syncToIndex(groups)
             }
         }
         refreshGroupsAvailability()
@@ -143,20 +158,81 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * Читает файл-индекс и подключает таблицы, которых ещё нет в реестре:
+     * второе устройство, переустановка, чужие группы. false — читать не удалось,
+     * и индекс трогать нельзя (иначе пустой реестр затёр бы чужие группы).
+     */
+    private suspend fun restoreFromIndex(): Boolean {
+        val parsed = indexRepository.readIndex().getOrNull() ?: return false
+        val known = registry.groups.first().associateBy { it.spreadsheetId }
+        parsed.entries.filter { it.spreadsheetId !in known }.forEach { entry ->
+            registry.addGroup(
+                GroupEntry(
+                    id = UUID.randomUUID().toString(),
+                    title = entry.title.ifEmpty { "Группа" },
+                    spreadsheetId = entry.spreadsheetId,
+                    spreadsheetUrl = entry.url,
+                    role = entry.role,
+                    createdAtEpochMillis = System.currentTimeMillis(),
+                ),
+            )
+        }
+        lastSyncedIndex = parsed.entries
+        return true
+    }
+
+    /**
+     * Пишет актуальный список групп в файл-индекс (список = аккаунт).
+     * Вызывается после каждой мутации реестра; не работает до [restoreFromIndex].
+     */
+    private fun syncToIndex(groups: List<GroupEntry>) {
+        if (!indexReady) return
+        val joinedAt = lastSyncedIndex.associate { it.spreadsheetId to it.joinedAt }
+        val snapshot = groups.map { it.toIndexEntry(joinedAt) }
+        if (snapshot == lastSyncedIndex) return
+        lastSyncedIndex = snapshot
+        val account = auth.storedEmail() ?: return
+        viewModelScope.launch {
+            indexRepository.writeIndex(account, snapshot).onFailure {
+                // Снимок откатываем: следующая мутация повторит запись.
+                android.util.Log.w("SheetsApi", "index write failed", it)
+                lastSyncedIndex = emptyList()
+            }
+        }
+    }
+
+    /** Дата подключения берётся из прошлого снимка: в [GroupEntry] её нет. */
+    private fun GroupEntry.toIndexEntry(previousJoinedAt: Map<String, String> = emptyMap()) = IndexEntry(
+        spreadsheetId = spreadsheetId,
+        title = localTitle ?: title,
+        url = spreadsheetUrl,
+        role = role,
+        joinedAt = previousJoinedAt[spreadsheetId] ?: SheetCodec.today(),
+    )
+
+    /**
      * Проверяет доступность всех групп текущему аккаунту и помечает недоступные
      * (таблица удалена или создатель ограничил доступ). Запускается при старте
      * приложения и после смены аккаунта.
      *
-     * Заодно читает маркер передачи: если прежняя таблица объявила копию —
-     * локальная запись переключается на неё (участнику не нужно переподключаться);
-     * если передача начата, но не завершена — id группы попадает в pendingTransferIds
+     * Перед проверками восстанавливает группы из файла-индекса; заодно читает
+     * маркер передачи: если прежняя таблица объявила копию — локальная запись
+     * переключается на неё (участнику не нужно переподключаться); если передача
+     * начата, но не завершена — id группы попадает в pendingTransferIds
      * (бейдж «Передача» и пункт «Завершить передачу» у создателя).
      */
     fun refreshGroupsAvailability() {
         if (auth.storedEmail() == null || availabilityCheckRunning) return
         availabilityCheckRunning = true
+        // До восстановления из индекса писать в него нельзя — иначе пустой
+        // реестр затёр бы чужие группы. Сбрасывается синхронно, до запуска.
+        indexReady = false
         viewModelScope.launch {
             try {
+                // До восстановления из индекса писать в него нельзя — иначе
+                // пустой реестр затёр бы чужие группы.
+                indexReady = restoreFromIndex()
+                if (indexReady) syncToIndex(registry.groups.first())
                 val current = registry.groups.first()
                 val pending = mutableSetOf<String>()
                 current.forEach { entry ->

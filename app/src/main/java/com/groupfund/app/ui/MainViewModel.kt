@@ -13,6 +13,7 @@ import com.groupfund.app.data.sheets.IndexEntry
 import com.groupfund.app.data.sheets.NotFoundException
 import com.groupfund.app.data.sheets.SheetCodec
 import com.groupfund.app.data.sheets.SheetsRepository
+import com.groupfund.app.data.sheets.observerToCreatorCandidates
 import com.groupfund.app.notifications.BirthdayCheck
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -211,6 +212,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     )
 
     /**
+     * Разовое исправление ролей: до починки прав свои группы помечались "observer",
+     * что блокировало правки и передачу. Создателя однозначно даёт владение таблицей
+     * (ownedByMe с Drive); чужие группы ролью не трогаем. Идемпотентно: повторные
+     * запуски ничего не меняют, поэтому можно держать на каждом старте.
+     */
+    private suspend fun migrateObserverRoles() {
+        val owned = repository.driveOwnedSpreadsheetIds().getOrNull() ?: return
+        observerToCreatorCandidates(registry.groups.first(), owned).forEach { spreadsheetId ->
+            registry.replaceSpreadsheet(spreadsheetId) { e -> e.copy(role = "creator") }
+        }
+    }
+
+    /**
      * Проверяет доступность всех групп текущему аккаунту и помечает недоступные
      * (таблица удалена или создатель ограничил доступ). Запускается при старте
      * приложения и после смены аккаунта.
@@ -233,6 +247,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 // пустой реестр затёр бы чужие группы.
                 indexReady = restoreFromIndex()
                 if (indexReady) syncToIndex(registry.groups.first())
+                // Чиним испорченные роли своих таблиц; изменение реестра уйдёт в индекс.
+                migrateObserverRoles()
                 val current = registry.groups.first()
                 val pending = mutableSetOf<String>()
                 current.forEach { entry ->

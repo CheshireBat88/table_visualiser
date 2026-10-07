@@ -29,6 +29,14 @@ data class PaymentInput(
 class NotFoundException(message: String, cause: Throwable?) : Exception(message, cause)
 
 /**
+ * ids своих таблиц, у которых роль ошибочно "observer" (до починки прав свои
+ * группы помечались наблюдателями). Меняет только вхождение: чужие таблицы
+ * и группы с корректной ролью не трогает.
+ */
+internal fun observerToCreatorCandidates(entries: List<GroupEntry>, ownedIds: Set<String>): List<String> =
+    entries.filter { it.role == "observer" && it.spreadsheetId in ownedIds }.map { it.spreadsheetId }
+
+/**
  * Маркер передачи группы, живущий в листе «Настройки» прежней таблицы (столбцы E:F).
  * Пока идёт передача — заполнен `pendingCode`; после завершения — `newSpreadsheetId`
  * (id копии), и все участники при следующем запуске автоматически переключаются на неё.
@@ -557,6 +565,34 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             pageToken = page.nextPageToken
         }
         found
+    }
+
+    /**
+     * Ids таблиц, созданных этим аккаунтом (поле Drive ownedByMe). Нужно для
+     * починки ролей: до исправления прав чужие/свои группы помечались observer,
+     * и только владение таблицей однозначно отличает создателя. Чужие общие
+     * таблицы в этот список не попадают — их в списке Drive просто нет.
+     */
+    suspend fun driveOwnedSpreadsheetIds(): Result<Set<String>> = withToken { _, drive, token ->
+        val ids = mutableSetOf<String>()
+        var pageToken: String? = null
+        var pageCount = 0
+        while (pageToken != null || pageCount == 0) {
+            if (pageCount >= MAX_PAGES) break
+            pageCount++
+            val page = drive.listFiles(
+                "Bearer $token",
+                query = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+                fields = "nextPageToken,files(id,ownedByMe)",
+                pageSize = 100,
+                pageToken = pageToken,
+            )
+            page.files.orEmpty().forEach { file ->
+                if (file.ownedByMe == true) file.id?.let(ids::add)
+            }
+            pageToken = page.nextPageToken
+        }
+        ids
     }
 
     /** Добавляет платёж и пересчитывает сводку. Возвращает обновлённые данные. */

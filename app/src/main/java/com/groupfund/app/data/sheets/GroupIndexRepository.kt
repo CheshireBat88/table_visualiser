@@ -9,10 +9,15 @@ internal const val INDEX_CLEAR_ROWS = 1000
 /** Диапазон очистки хвоста: начинается со строки сразу за последней строкой данных. */
 internal fun indexClearRange(lastDataRow: Int): String = "$INDEX_SHEET!A${lastDataRow + 1}:Z$INDEX_CLEAR_ROWS"
 
-/** Поиск файла-индекса по метке в appProperties (чужие файлы Drive всё равно не отдаст). */
+/**
+ * Поиск файла-индекса по точному имени: под drive.file свои файлы ищутся по
+ * имени стабильно, а запрос по appProperties (оператор has) может не совпасть
+ * из-за событийной индексации. Имя уникальное — вручную такой файл не назовут;
+ * метка в appProperties остаётся, чтобы «Из диска» не принял индекс за группу.
+ */
 internal val INDEX_QUERY: String =
     "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false " +
-        "and appProperties has { key='$INDEX_MARKER_KEY' and value='$INDEX_MARKER_VALUE' }"
+        "and name='$INDEX_FILE_TITLE'"
 
 /**
  * Технический файл-индекс на Google Диске: список таблиц, доступных аккаунту,

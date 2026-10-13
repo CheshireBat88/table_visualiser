@@ -4,7 +4,6 @@ import android.content.Context
 import com.groupfund.app.data.auth.GoogleAuthManager
 import com.groupfund.app.data.registry.GroupRegistry
 import com.groupfund.app.data.sheets.SheetsRepository
-import kotlinx.coroutines.flow.first
 import java.time.LocalDate
 import java.time.MonthDay
 import java.time.temporal.ChronoUnit
@@ -30,7 +29,7 @@ object BirthdayCheck {
         val today = LocalDate.now()
 
         val groups = try {
-            registry.groups.first().toList()
+            auth.storedEmail()?.let { registry.groupsFor(it) } ?: emptyList()
         } catch (e: Exception) {
             emptyList()
         }

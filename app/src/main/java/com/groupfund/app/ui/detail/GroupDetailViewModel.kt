@@ -69,7 +69,8 @@ class GroupDetailViewModel(
 
     init {
         viewModelScope.launch {
-            entry = registry.groupById(groupId)
+            val account = auth.storedEmail() ?: return@launch
+            entry = registry.groupById(account, groupId)
             _uiState.update {
                 it.copy(
                     title = entry?.localTitle ?: entry?.title,
@@ -130,7 +131,8 @@ class GroupDetailViewModel(
     private suspend fun demoteToObserver() {
         val e = entry ?: return
         if (e.role == "observer") return
-        registry.replaceSpreadsheet(e.spreadsheetId) { it.copy(role = "observer") }
+        val email = auth.storedEmail() ?: return
+        registry.replaceSpreadsheet(email, e.spreadsheetId) { it.copy(role = "observer") }
         _uiState.update { it.copy(role = "observer") }
     }
 
@@ -215,12 +217,13 @@ class GroupDetailViewModel(
     fun deleteGroup() {
         val entry = entry ?: return
         viewModelScope.launch {
+            val email = auth.storedEmail() ?: return@launch
             _uiState.update { it.copy(busy = true) }
             try {
                 if (entry.role == "creator") {
                     repository.deleteFromDrive(entry.spreadsheetId)
                 }
-                registry.removeGroup(entry.id)
+                registry.removeGroup(email, entry.id)
                 _uiState.update { it.copy(deleted = true) }
             } finally {
                 _uiState.update { it.copy(busy = false) }
@@ -465,11 +468,12 @@ class GroupDetailViewModel(
 
     private suspend fun doLoad() {
         val entry = entry ?: return
+        val email = auth.storedEmail() ?: return
         val result = repository.loadGroup(entry.spreadsheetId)
         _uiState.update { st ->
             result.fold(
                 onSuccess = { g ->
-                    entry.let { registry.setUnavailable(it.id, false) }
+                    entry.let { registry.setUnavailable(email, it.id, false) }
                     st.copy(
                         loading = false,
                         group = g,
@@ -479,7 +483,7 @@ class GroupDetailViewModel(
                 },
                 onFailure = { e ->
                     if (e is NotFoundException || e is PermissionDeniedException) {
-                        entry.let { registry.setUnavailable(it.id, true) }
+                        entry.let { registry.setUnavailable(email, it.id, true) }
                         st.copy(
                             loading = false,
                             error = "Группа удалена или создатель ограничил к ней доступ",

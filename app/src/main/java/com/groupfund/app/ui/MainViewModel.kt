@@ -130,7 +130,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Удаляет группу из списка устройства, не трогая таблицу на Диске. */
     fun leaveGroup(entryId: String) {
-        viewModelScope.launch { registry.removeGroup(entryId) }
+        viewModelScope.launch {
+            val email = auth.storedEmail() ?: return@launch
+            registry.removeGroup(email, entryId)
+        }
     }
 
     /**
@@ -141,15 +144,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun renameGroup(entryId: String, newTitle: String) {
         if (newTitle.isBlank()) return
         viewModelScope.launch {
-            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            val email = auth.storedEmail() ?: return@launch
+            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             if (entry.role != "creator") {
-                registry.renameGroup(entryId, newTitle)
+                registry.renameGroup(email, entryId, newTitle)
                 return@launch
             }
             repository.renameSpreadsheet(entry.spreadsheetId, newTitle).fold(
-                onSuccess = { registry.renameGroup(entryId, newTitle, sheetRenamed = true) },
+                onSuccess = { registry.renameGroup(email, entryId, newTitle, sheetRenamed = true) },
                 onFailure = {
-                    registry.renameGroup(entryId, newTitle)
+                    registry.renameGroup(email, entryId, newTitle)
                     _uiState.update { st ->
                         st.copy(error = "Таблица не переименована: ${it.message ?: "ошибка"}")
                     }
@@ -164,10 +168,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * и индекс трогать нельзя (иначе пустой реестр затёр бы чужие группы).
      */
     private suspend fun restoreFromIndex(): Boolean {
+        val account = auth.storedEmail() ?: return false
         val parsed = indexRepository.readIndex().getOrNull() ?: return false
-        val known = registry.groups.first().associateBy { it.spreadsheetId }
+        val known = registry.groupsFor(account).associateBy { it.spreadsheetId }
         parsed.entries.filter { it.spreadsheetId !in known }.forEach { entry ->
             registry.addGroup(
+                account,
                 GroupEntry(
                     id = UUID.randomUUID().toString(),
                     title = entry.title.ifEmpty { "Группа" },
@@ -218,9 +224,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * запуски ничего не меняют, поэтому можно держать на каждом старте.
      */
     private suspend fun migrateObserverRoles() {
+        val account = auth.storedEmail() ?: return
         val owned = repository.driveOwnedSpreadsheetIds().getOrNull() ?: return
-        observerToCreatorCandidates(registry.groups.first(), owned).forEach { spreadsheetId ->
-            registry.replaceSpreadsheet(spreadsheetId) { e -> e.copy(role = "creator") }
+        observerToCreatorCandidates(registry.groupsFor(account), owned).forEach { spreadsheetId ->
+            registry.replaceSpreadsheet(account, spreadsheetId) { e -> e.copy(role = "creator") }
         }
     }
 
@@ -243,13 +250,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         indexReady = false
         viewModelScope.launch {
             try {
-                // До восстановления из индекса писать в него нельзя — иначе
-                // пустой реестр затёр бы чужие группы.
+                val account = auth.storedEmail() ?: return@launch
+                registry.migrateLegacy(account)
                 indexReady = restoreFromIndex()
-                if (indexReady) syncToIndex(registry.groups.first())
                 // Чиним испорченные роли своих таблиц; изменение реестра уйдёт в индекс.
                 migrateObserverRoles()
-                val current = registry.groups.first()
+                val current = registry.groupsFor(account)
+                if (indexReady) syncToIndex(current)
                 val pending = mutableSetOf<String>()
                 current.forEach { entry ->
                     val marker = repository.readTransferMarker(entry.spreadsheetId).getOrNull()
@@ -257,7 +264,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     if (!target.isNullOrEmpty() && target != entry.spreadsheetId) {
                         // Прежняя таблица передана: переключаемся на копию и роль, если были создателем.
                         val meta = repository.spreadsheetMeta(target).getOrNull()
-                        registry.replaceSpreadsheet(entry.spreadsheetId) { e ->
+                        registry.replaceSpreadsheet(account, entry.spreadsheetId) { e ->
                             e.copy(
                                 spreadsheetId = target,
                                 title = meta?.first ?: e.title,
@@ -273,7 +280,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         pending += entry.id
                     }
                     val accessible = repository.checkAccessible(entry.spreadsheetId).getOrNull()
-                    if (accessible != null) registry.setUnavailable(entry.id, !accessible)
+                    if (accessible != null) registry.setUnavailable(account, entry.id, !accessible)
                 }
                 _uiState.update { it.copy(pendingTransferIds = pending) }
             } finally {
@@ -300,7 +307,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val id = pendingInviteId ?: return
         if (auth.storedEmail() == null) return // сначала нужен вход
         viewModelScope.launch {
-            val existing = registry.findBySpreadsheetId(id)
+            val email = auth.storedEmail() ?: return@launch
+            val existing = registry.findBySpreadsheetId(email, id)
             if (existing != null) {
                 pendingInviteId = null
                 _uiState.update { it.copy(inviteJoined = existing.id) }
@@ -308,7 +316,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             repository.prepareInvite(id)
                 .onSuccess { entry ->
-                    registry.addGroup(entry)
+                    registry.addGroup(email, entry)
                     pendingInviteId = null
                     _uiState.update { it.copy(inviteJoined = entry.id) }
                 }
@@ -341,10 +349,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteGroup(entry: GroupEntry) {
         viewModelScope.launch {
+            val email = auth.storedEmail() ?: return@launch
             if (entry.role == "creator") {
                 repository.deleteFromDrive(entry.spreadsheetId)
             }
-            registry.removeGroup(entry.id)
+            registry.removeGroup(email, entry.id)
         }
     }
 
@@ -362,7 +371,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun startTransfer(entryId: String) {
         viewModelScope.launch {
-            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            val email = auth.storedEmail() ?: return@launch
+            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             if (entry.role != "creator") return@launch
             // Не даём инициировать вторую передачу по той же группе: в локальном списке
             // и/или в маркере таблицы уже может быть активная (или завершённая) передача.
@@ -416,7 +426,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Отменяет начатую передачу (создатель): стирает код в прежней таблице, ссылка перестаёт действовать. */
     fun cancelTransfer(entryId: String) {
         viewModelScope.launch {
-            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            val email = auth.storedEmail() ?: return@launch
+            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             repository.clearTransferPending(entry.spreadsheetId)
                 .onSuccess {
                     _uiState.update { s ->
@@ -443,7 +454,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val newId = newSpreadsheetId.trim()
         if (newId.isEmpty()) return
         viewModelScope.launch {
-            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            val email = auth.storedEmail() ?: return@launch
+            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             if (entry.spreadsheetId == newId) return@launch
             val marker = repository.readTransferMarker(entry.spreadsheetId).getOrNull()
             if (marker?.newSpreadsheetId != null) {
@@ -458,7 +470,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val meta = repository.spreadsheetMeta(newId).getOrNull()
-            registry.replaceSpreadsheet(entry.spreadsheetId) { e ->
+            registry.replaceSpreadsheet(email, entry.spreadsheetId) { e ->
                 e.copy(
                     spreadsheetId = newId,
                     title = meta?.first ?: e.title,
@@ -481,11 +493,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** «Убрать прежнюю версию»: удаляет старую таблицу с диска создателя после передачи. */
     fun deleteRetiredCopy(entryId: String) {
         viewModelScope.launch {
-            val entry = runCatching { registry.groupById(entryId) }.getOrNull() ?: return@launch
+            val email = auth.storedEmail() ?: return@launch
+            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             val retired = entry.retiredSpreadsheetId ?: return@launch
             repository.deleteFromDrive(retired)
                 .onSuccess {
-                    registry.replaceSpreadsheet(entry.spreadsheetId) { e -> e.copy(retiredSpreadsheetId = null) }
+                    registry.replaceSpreadsheet(email, entry.spreadsheetId) { e -> e.copy(retiredSpreadsheetId = null) }
                     _uiState.update { it.copy(error = "Прежняя таблица удалена из Google Диска") }
                 }
                 .onFailure { e ->
@@ -510,6 +523,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         viewModelScope.launch {
             _uiState.update { it.copy(acceptBusy = true) }
+            val email = auth.storedEmail() ?: run {
+                _uiState.update { it.copy(acceptBusy = false) }
+                return@launch
+            }
             // Проверяем маркер до копирования: передача может быть уже завершена или
             // отменена, а код — не совпадать (устаревшая ссылка).
             val marker = repository.readTransferMarker(parsed.spreadsheetId).getOrNull()
@@ -542,9 +559,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             repository.copySpreadsheetToMe(parsed.spreadsheetId)
                 .onSuccess { entry ->
-                    val existing = registry.findBySpreadsheetId(parsed.spreadsheetId)
+                    val existing = registry.findBySpreadsheetId(email, parsed.spreadsheetId)
                     if (existing != null) {
-                        registry.replaceSpreadsheet(parsed.spreadsheetId) { e ->
+                        registry.replaceSpreadsheet(email, parsed.spreadsheetId) { e ->
                             e.copy(
                                 spreadsheetId = entry.spreadsheetId,
                                 title = entry.title,
@@ -555,7 +572,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                             )
                         }
                     } else {
-                        registry.addGroup(entry)
+                        registry.addGroup(email, entry)
                     }
                     // Перечитываем маркер: за время копирования передача могла завершиться
                     // другим получателем. Первый записавший id копии — победитель.
@@ -662,7 +679,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Добавляет выбранные найденные группы в локальный список. */
     fun importDiscoveredGroups(selected: List<GroupEntry>) {
         viewModelScope.launch {
-            selected.forEach { registry.addGroup(it) }
+            val email = auth.storedEmail() ?: return@launch
+            selected.forEach { registry.addGroup(email, it) }
             _uiState.update { it.copy(discovered = emptyList()) }
         }
     }
@@ -673,6 +691,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun refreshSignedIn() {
         val email = auth.storedEmail()
+        registry.bindAccount(email)
         _uiState.update {
             it.copy(
                 isSignedIn = email != null,

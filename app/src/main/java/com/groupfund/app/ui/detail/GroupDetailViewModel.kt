@@ -17,6 +17,7 @@ import com.groupfund.app.data.sheets.GroupSummary
 import com.groupfund.app.data.sheets.MemberData
 import com.groupfund.app.data.sheets.NotFoundException
 import com.groupfund.app.data.sheets.PaymentInput
+import com.groupfund.app.data.sheets.PermissionDeniedException
 import com.groupfund.app.data.sheets.SheetsRepository
 import com.groupfund.app.data.sheets.SummaryCalculator
 import com.groupfund.app.data.sheets.isCollectionPayment
@@ -68,7 +69,8 @@ class GroupDetailViewModel(
 
     init {
         viewModelScope.launch {
-            entry = registry.groupById(groupId)
+            val account = auth.storedEmail() ?: return@launch
+            entry = registry.groupById(account, groupId)
             _uiState.update {
                 it.copy(
                     title = entry?.localTitle ?: entry?.title,
@@ -110,6 +112,29 @@ class GroupDetailViewModel(
 
     fun consumeConsentIntent() = _uiState.update { it.copy(consentIntent = null) }
     fun clearError() = _uiState.update { it.copy(error = null) }
+
+    /**
+     * Единая обработка ошибок операций (записи и чтения): согласие OAuth — на
+     * экран согласия; 403 после свежего токена — прав нет, роль понижается до
+     * наблюдателя (app про неё больше не показывает формы правки и передачи).
+     */
+    private suspend fun opError(st: GroupDetailUiState, e: Throwable, fallback: String): GroupDetailUiState = when (e) {
+        is OAuthConsentRequiredException -> st.copy(consentIntent = e.intent)
+        is PermissionDeniedException -> {
+            demoteToObserver()
+            st.copy(error = "У вас только право на просмотр этой группы")
+        }
+        else -> st.copy(error = e.message ?: fallback)
+    }
+
+    /** Понижает роль этой группы до наблюдателя: прав на запись у аккаунта нет. */
+    private suspend fun demoteToObserver() {
+        val e = entry ?: return
+        if (e.role == "observer") return
+        val email = auth.storedEmail() ?: return
+        registry.replaceSpreadsheet(email, e.spreadsheetId) { it.copy(role = "observer") }
+        _uiState.update { it.copy(role = "observer") }
+    }
 
     /** Пользователь отменил/отклонил экран согласия Google — повторять действие нельзя. */
     fun onConsentDenied() = _uiState.update { it.copy(error = "Доступ к Google Таблицам не предоставлен") }
@@ -192,12 +217,13 @@ class GroupDetailViewModel(
     fun deleteGroup() {
         val entry = entry ?: return
         viewModelScope.launch {
+            val email = auth.storedEmail() ?: return@launch
             _uiState.update { it.copy(busy = true) }
             try {
                 if (entry.role == "creator") {
                     repository.deleteFromDrive(entry.spreadsheetId)
                 }
-                registry.removeGroup(entry.id)
+                registry.removeGroup(email, entry.id)
                 _uiState.update { it.copy(deleted = true) }
             } finally {
                 _uiState.update { it.copy(busy = false) }
@@ -435,24 +461,19 @@ class GroupDetailViewModel(
         _uiState.update { st ->
             result.fold(
                 onSuccess = { st.copy(shareReady = true) },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось открыть доступ по ссылке")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось открыть доступ по ссылке") },
             )
         }
     }
 
     private suspend fun doLoad() {
         val entry = entry ?: return
+        val email = auth.storedEmail() ?: return
         val result = repository.loadGroup(entry.spreadsheetId)
         _uiState.update { st ->
             result.fold(
                 onSuccess = { g ->
-                    entry.let { registry.setUnavailable(it.id, false) }
+                    entry.let { registry.setUnavailable(email, it.id, false) }
                     st.copy(
                         loading = false,
                         group = g,
@@ -461,19 +482,14 @@ class GroupDetailViewModel(
                     )
                 },
                 onFailure = { e ->
-                    if (e is NotFoundException) {
-                        entry.let { registry.setUnavailable(it.id, true) }
+                    if (e is NotFoundException || e is PermissionDeniedException) {
+                        entry.let { registry.setUnavailable(email, it.id, true) }
                         st.copy(
                             loading = false,
                             error = "Группа удалена или создатель ограничил к ней доступ",
                         )
-                    } else if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
                     } else {
-                        st.copy(
-                            loading = false,
-                            error = e.message ?: "Не удалось загрузить группу",
-                        )
+                        opError(st, e, "Не удалось загрузить группу").copy(loading = false)
                     }
                 },
             )
@@ -496,13 +512,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось внести платёж")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось внести платёж") },
             )
         }
     }
@@ -520,13 +530,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось внести платежи")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось внести платежи") },
             )
         }
     }
@@ -545,13 +549,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось оформить возврат")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось оформить возврат") },
             )
         }
     }
@@ -574,13 +572,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось добавить расход")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось добавить расход") },
             )
         }
     }
@@ -598,13 +590,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось изменить платёж")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось изменить платёж") },
             )
         }
     }
@@ -627,13 +613,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось изменить расход")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось изменить расход") },
             )
         }
     }
@@ -651,13 +631,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось удалить платёж")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось удалить платёж") },
             )
         }
     }
@@ -675,13 +649,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось удалить расход")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось удалить расход") },
             )
         }
     }
@@ -699,13 +667,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось исключить участника")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось исключить участника") },
             )
         }
     }
@@ -723,13 +685,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось обновить участника")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось обновить участника") },
             )
         }
     }
@@ -747,13 +703,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось обновить план месяцев")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось обновить план месяцев") },
             )
         }
     }
@@ -771,13 +721,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось добавить участника")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось добавить участника") },
             )
         }
     }
@@ -795,13 +739,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось создать сбор")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось создать сбор") },
             )
         }
     }
@@ -819,13 +757,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось обновить сбор")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось обновить сбор") },
             )
         }
     }
@@ -843,13 +775,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось зачислить доплату по сбору")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось зачислить доплату по сбору") },
             )
         }
     }
@@ -867,13 +793,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось зачесть из месячных взносов")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось зачесть из месячных взносов") },
             )
         }
     }
@@ -897,13 +817,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось изменить сбор")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось изменить сбор") },
             )
         }
     }
@@ -921,13 +835,7 @@ class GroupDetailViewModel(
                         title = displayTitle(g.title),
                     )
                 },
-                onFailure = { e ->
-                    if (e is OAuthConsentRequiredException) {
-                        st.copy(consentIntent = e.intent)
-                    } else {
-                        st.copy(error = e.message ?: "Не удалось удалить сбор")
-                    }
-                },
+                onFailure = { e -> opError(st, e, "Не удалось удалить сбор") },
             )
         }
     }

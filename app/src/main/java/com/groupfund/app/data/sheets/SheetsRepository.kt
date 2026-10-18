@@ -29,6 +29,22 @@ data class PaymentInput(
 class NotFoundException(message: String, cause: Throwable?) : Exception(message, cause)
 
 /**
+ * Доступ запрещён (HTTP 403 после повторного запроса со свежим токеном):
+ * у аккаунта нет прав на операцию. Для записи это значит, что таблица доступна
+ * только на просмотр — роль следует понизить до наблюдателя; для чтения —
+ * что доступа нет вовсе.
+ */
+class PermissionDeniedException(message: String) : Exception(message)
+
+/**
+ * ids своих таблиц, у которых роль ошибочно "observer" (до починки прав свои
+ * группы помечались наблюдателями). Меняет только вхождение: чужие таблицы
+ * и группы с корректной ролью не трогает.
+ */
+internal fun observerToCreatorCandidates(entries: List<GroupEntry>, ownedIds: Set<String>): List<String> =
+    entries.filter { it.role == "observer" && it.spreadsheetId in ownedIds }.map { it.spreadsheetId }
+
+/**
  * Маркер передачи группы, живущий в листе «Настройки» прежней таблицы (столбцы E:F).
  * Пока идёт передача — заполнен `pendingCode`; после завершения — `newSpreadsheetId`
  * (id копии), и все участники при следующем запуске автоматически переключаются на неё.
@@ -103,7 +119,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      * Повтор безопасен, только если запись не оставляет лист в промежуточном пустом
      * состоянии — поэтому writeData пишет данные ДО очистки «хвостов» (см. ниже).
      */
-    private suspend fun <T> withToken(
+    internal suspend fun <T> withToken(
         retryOn429: Boolean = true,
         block: suspend (SheetsApiService, DriveApiService, String) -> T,
     ): Result<T> {
@@ -132,7 +148,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                         } catch (e2: CancellationException) {
                             throw e2
                         } catch (e2: HttpException) {
-                            Result.failure(illegal(e2))
+                            // Повтор со свежим токеном не помог: 403 — прав действительно нет.
+                            Result.failure(categorize(e2))
                         } catch (e2: Exception) {
                             Result.failure(e2)
                         }
@@ -171,6 +188,12 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         }
         Log.w("SheetsApi", message, e)
         return if (e.code() == 404) NotFoundException(message, e) else IllegalStateException(message, e)
+    }
+
+    /** Классифицирует окончательный HTTP-ответ по коду: 404, 403 или общая ошибка. */
+    private fun categorize(e: HttpException): Exception {
+        val base = illegal(e)
+        return if (e.code() == 403) PermissionDeniedException(base.message ?: "Доступ запрещён") else base
     }
 
     /**
@@ -276,15 +299,19 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      * true — доступ есть; false — таблицы нет или доступ закрыт; failure — проверить не удалось
      * (сеть/согласие), пометку менять не следует.
      */
-    suspend fun checkAccessible(spreadsheetId: String): Result<Boolean> = withToken { sheets, _, token ->
-        try {
-            sheets.getSpreadsheetMeta("Bearer $token", spreadsheetId)
-            true
-        } catch (e: retrofit2.HttpException) {
-            if (e.code() == 401 || e.code() == 403) throw e // отдаём withToken: повторит со свежим токеном
-            false // 404 и прочие — доступа нет
+    suspend fun checkAccessible(spreadsheetId: String): Result<Boolean> =
+        withToken { sheets, _, token ->
+            try {
+                sheets.getSpreadsheetMeta("Bearer $token", spreadsheetId)
+                true
+            } catch (e: retrofit2.HttpException) {
+                if (e.code() == 401 || e.code() == 403) throw e // отдаём withToken: повторит со свежим токеном
+                false // 404 и прочие — доступа нет
+            }
+        }.recoverCatching { e ->
+            // 403 после повторного запроса: таблица существует, но читать её нельзя.
+            if (e is PermissionDeniedException) false else throw e
         }
-    }
 
     /**
      * Открывает доступ «по ссылке» (тип anyone, роль reader). Раньше ошибки глотались
@@ -557,6 +584,34 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             pageToken = page.nextPageToken
         }
         found
+    }
+
+    /**
+     * Ids таблиц, созданных этим аккаунтом (поле Drive ownedByMe). Нужно для
+     * починки ролей: до исправления прав чужие/свои группы помечались observer,
+     * и только владение таблицей однозначно отличает создателя. Чужие общие
+     * таблицы в этот список не попадают — их в списке Drive просто нет.
+     */
+    suspend fun driveOwnedSpreadsheetIds(): Result<Set<String>> = withToken { _, drive, token ->
+        val ids = mutableSetOf<String>()
+        var pageToken: String? = null
+        var pageCount = 0
+        while (pageToken != null || pageCount == 0) {
+            if (pageCount >= MAX_PAGES) break
+            pageCount++
+            val page = drive.listFiles(
+                "Bearer $token",
+                query = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
+                fields = "nextPageToken,files(id,ownedByMe)",
+                pageSize = 100,
+                pageToken = pageToken,
+            )
+            page.files.orEmpty().forEach { file ->
+                if (file.ownedByMe == true) file.id?.let(ids::add)
+            }
+            pageToken = page.nextPageToken
+        }
+        ids
     }
 
     /** Добавляет платёж и пересчитывает сводку. Возвращает обновлённые данные. */

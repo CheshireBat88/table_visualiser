@@ -185,11 +185,12 @@ class CreateGroupViewModel(app: Application) : AndroidViewModel(app) {
         lastDraft = draft
         _uiState.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
+            val account = auth.storedEmail() ?: return@launch
             val result = repository.createGroup(draft)
             _uiState.update { it.copy(busy = false) }
             result.fold(
                 onSuccess = { entry ->
-                    registry.addGroup(entry)
+                    registry.addGroup(account, entry)
                     _uiState.update { it.copy(created = true) }
                 },
                 onFailure = { e ->

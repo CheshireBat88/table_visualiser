@@ -274,6 +274,7 @@ data class DriveFile(
     @SerializedName("webViewLink") val webViewLink: String? = null,
     @SerializedName("createdTime") val createdTime: String? = null,
     @SerializedName("appProperties") val appProperties: Map<String, String>? = null,
+    @SerializedName("ownedByMe") val ownedByMe: Boolean? = null,
 )
 
 data class DriveFilePatch(

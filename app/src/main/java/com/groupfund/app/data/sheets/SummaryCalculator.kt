@@ -47,18 +47,32 @@ object SummaryCalculator {
     /** Префикс комментария платежей-возвратов излишка сверх доли по сбору. */
     const val COLLECTION_REFUND_TAG_PREFIX = "Возврат из сбора: "
 
+    /** Префикс комментария платежей, переведённых из удалённого сбора в обычные взносы. */
+    const val CANCELLED_COLLECTION_TAG_PREFIX = "Отмененный сбор: "
+
     /** Считывает полную сводку из данных группы. */
     fun compute(group: GroupData): GroupSummary {
         val months = group.months
         // Платежи по сборам («Сбор: …», «Возврат из сбора: …») включаются в «внесено» независимо
         // от флага «в общий бюджет»: внесённые деньги должны быть видны в сводке всегда.
-        // Возвраты («Возврат: …») вычитаются.
+        // Возвраты («Возврат: …») вычитаются из суммы обычных платежей: perMonth должен
+        // согласовываться с totalPaid — вернул деньги — оплаченные месяцы «сгорают».
+        // «Сбор: …» по месяцам не распределяется (покрывает долю сбора), а «Возврат из
+        // сбора: …» — бюджетный доход: идёт на оплату будущих месяцев наравне с обычным
+        // взносом.
         val basePaidByMember: Map<String, Double> = group.payments
-            .filterNot {
-                it.comment.startsWith(COLLECTION_TAG_PREFIX) || it.comment.startsWith(REFUND_TAG_PREFIX)
-            }
             .groupBy { it.member }
-            .mapValues { (_, ps) -> ps.sumOf { it.amount } }
+            .mapValues { (_, ps) ->
+                round2(
+                    ps.sumOf {
+                        when {
+                            it.comment.startsWith(REFUND_TAG_PREFIX) -> -it.amount
+                            it.comment.startsWith(COLLECTION_TAG_PREFIX) -> 0.0
+                            else -> it.amount
+                        }
+                    },
+                )
+            }
         // Вклад в ОТДЕЛЬНЫЙ сбор (sharedWithBudget=false) не является деньгами бюджета: он
         // лежит в самом сборе и учитывается только там. В общий бюджет такой сбор никак
         // не попадает — ни в доход, ни в «Сборы», ни в расходы. Исключение: избыток сверх

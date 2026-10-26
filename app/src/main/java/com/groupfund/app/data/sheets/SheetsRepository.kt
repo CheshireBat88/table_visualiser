@@ -1398,9 +1398,10 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         // два дубля с одинаковым именем (наследие сбоев записи), и один из них
         // «воскресал» после удаления.
         val newCollections = group.collections.filterNot { it.name == name }
-        // Взносы «Сбор: X» удаляем, а «Возврат из сбора: X» (излишек) оставляем:
-        // он уже зачислен в месячный баланс, и его удаление обнулило бы этот баланс.
-        val newPayments = group.payments.filterNot { it.comment == "Сбор: $name" }
+        // Взносы «Сбор: X» переводим в обычные взносы «Отмененный сбор: X», а не удаляем:
+        // деньги участников реально внесены и должны вернуться в месячные платежи.
+        // «Возврат из сбора: X» (излишек) оставляем — он уже в месячном балансе.
+        val newPayments = renameCollectionPaymentsToCancelled(group.payments, name)
         val updated = group.copy(collections = newCollections, payments = newPayments)
         val newSummary = SummaryCalculator.compute(updated)
         writeData(

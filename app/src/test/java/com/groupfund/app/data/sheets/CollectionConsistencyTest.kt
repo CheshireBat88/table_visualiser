@@ -10,6 +10,11 @@ class CollectionConsistencyTest {
     private fun group(
         collections: List<CollectionData>,
         payments: List<PaymentData>,
+        members: List<MemberData> = listOf(
+            MemberData("A", "", "2026-01-01", true, null, null),
+            MemberData("B", "", "2026-01-01", true, null, null),
+            MemberData("C", "", "2026-01-01", true, null, null),
+        ),
     ) = GroupData(
         spreadsheetId = "1",
         title = "Тест",
@@ -17,14 +22,10 @@ class CollectionConsistencyTest {
         currency = "RUB",
         createdAt = "2026-01-01",
         months = listOf(MonthPlan(java.time.YearMonth.of(2026, 1), true, 100)),
-        members = listOf(
-            MemberData("A", "", "2026-01-01", true, null, null),
-            MemberData("B", "", "2026-01-01", true, null, null),
-            MemberData("C", "", "2026-01-01", true, null, null),
-        ),
         payments = payments,
         expenses = emptyList(),
         collections = collections,
+        members = members,
     )
 
     private fun coll(contrib: Map<String, Double>) = CollectionData(
@@ -35,6 +36,9 @@ class CollectionConsistencyTest {
         contrib = contrib,
         sharedWithBudget = true,
     )
+
+    private fun member(name: String) =
+        MemberData(name = name, email = "", joinDate = "2026-01-01", active = true, removedAt = null, refund = null, offMonths = emptyList())
 
     @Test
     fun `частичные взносы совпадают с платежами - без предупреждений`() {
@@ -109,5 +113,55 @@ class CollectionConsistencyTest {
         )
         val warnings = CollectionConsistency.mismatches(g)
         assertTrue(warnings.any { it.contains("Незнакомец") })
+    }
+
+    @Test
+    fun `удаление сбора переводит взносы в отменённые`() {
+        val payments = listOf(
+            PaymentData("A", "2026-01-01", 100.0, "Сбор: Gift"),
+            PaymentData("B", "2026-01-02", 50.0, "Сбор: Gift"),
+            PaymentData("A", "2026-01-03", 20.0, "Возврат из сбора: Gift"),
+            PaymentData("C", "2026-01-04", 300.0, ""),
+        )
+        val renamed = renameCollectionPaymentsToCancelled(payments, "Gift")
+        assertEquals(4, renamed.size)
+        // «Сбор: Gift» → «Отмененный сбор: Gift», суммы и даты сохранены
+        assertEquals(PaymentData("A", "2026-01-01", 100.0, "Отмененный сбор: Gift"), renamed[0])
+        assertEquals(PaymentData("B", "2026-01-02", 50.0, "Отмененный сбор: Gift"), renamed[1])
+        // Излишек и обычный платёж не тронуты
+        assertEquals(payments[2], renamed[2])
+        assertEquals(payments[3], renamed[3])
+    }
+
+    @Test
+    fun `у не вносившего участника ничего не добавляется`() {
+        val payments = listOf(
+            PaymentData("C", "2026-01-04", 300.0, ""),
+            PaymentData("C", "2026-01-05", 50.0, "Сбор: Other"),
+        )
+        val renamed = renameCollectionPaymentsToCancelled(payments, "Gift")
+        assertEquals(payments, renamed)
+    }
+
+    @Test
+    fun `отменённый сбор возвращает деньги в месячные взносы`() {
+        val g = group(
+            members = listOf(member("A"), member("B"), member("C")),
+            collections = listOf(coll(emptyMap())),
+            payments = listOf(
+                PaymentData("A", "2026-01-01", 100.0, "Сбор: Gift"),
+                PaymentData("B", "2026-01-01", 50.0, "Сбор: Gift"),
+            ),
+        )
+        val payments = renameCollectionPaymentsToCancelled(g.payments, "Gift")
+        val s = SummaryCalculator.compute(g.copy(collections = emptyList(), payments = payments))
+        val a = s.rows.first { it.member.name == "A" }
+        val b = s.rows.first { it.member.name == "B" }
+        // Всё внесённое вернулось в месячные взносы: A оплатил 100, B — 50; C не вносил.
+        assertEquals(100.0, a.perMonth.sum(), 0.001)
+        assertEquals(50.0, b.perMonth.sum(), 0.001)
+        assertEquals(100.0, a.balance, 0.001)
+        assertEquals(50.0, b.balance, 0.001)
+        assertEquals(0.0, s.rows.first { it.member.name == "C" }.balance, 0.001)
     }
 }

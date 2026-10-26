@@ -36,6 +36,21 @@ internal fun removeMemberCollectionPayments(
 }
 
 /**
+ * Переводит платежи удаляемого сбора в обычные взносы: «Сбор: X» переименовывается
+ * в «Отмененный сбор: X» (суммы и даты сохраняются). «Возврат из сбора: X» остаётся
+ * как есть — излишек уже зачислен в месячный баланс. Итог: в месячные взносы
+ * возвращается ровно всё, что участник внёс в сбор.
+ */
+internal fun renameCollectionPaymentsToCancelled(
+    payments: List<PaymentData>,
+    collectionName: String,
+): List<PaymentData> {
+    val tag = "Сбор: $collectionName"
+    val cancelled = "${SummaryCalculator.CANCELLED_COLLECTION_TAG_PREFIX}$collectionName"
+    return payments.map { if (it.comment == tag) it.copy(comment = cancelled) else it }
+}
+
+/**
  * Применяет один взнос по сбору к текущему состоянию (общая логика для одиночного
  * и пакетного внесения): обновляет вклад участника и пересобирает его платежи по сбору.
  * Пока вклад в пределах доли — прикрепляется транш строкой «Сбор: …»; при избытке —

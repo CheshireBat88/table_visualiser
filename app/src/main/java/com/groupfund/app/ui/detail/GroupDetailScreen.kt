@@ -2277,7 +2277,9 @@ var details by remember { mutableStateOf(false) }
                             .asReversed()
                             .sortedByDescending { it.value.date }
                     }
-                    val total = memberPayments.sumOf { it.value.amount }
+                    val total = round2(memberPayments.sumOf {
+                        if (it.value.comment.startsWith(SummaryCalculator.REFUND_TAG_PREFIX)) -it.value.amount else it.value.amount
+                    })
                     val coll = memberPayments.filter { it.value.comment.startsWith("Сбор: ") }.sumOf { it.value.amount }
                     val base = round2(total - coll)
                     Card(modifier = Modifier.fillMaxWidth()) {
@@ -2323,7 +2325,9 @@ var details by remember { mutableStateOf(false) }
                 }
             } else {
                 items(byMemberPayments, key = { it.first }) { (memberName, list) ->
-                    val total = list.sumOf { it.amount }
+                    val total = round2(list.sumOf {
+                        if (it.comment.startsWith(SummaryCalculator.REFUND_TAG_PREFIX)) -it.amount else it.amount
+                    })
                     val coll = list.filter { it.comment.startsWith("Сбор: ") }.sumOf { it.amount }
                     val base = round2(total - coll)
                     val last = list.maxOfOrNull { it.date } ?: ""
@@ -2381,9 +2385,11 @@ private fun PaymentTransactionRows(
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+            val isRefund = p.comment.startsWith(SummaryCalculator.REFUND_TAG_PREFIX)
             Text(
-                "${money(p.amount)} ${currencySymbol(currency)}",
+                "${if (isRefund) "-" else ""}${money(p.amount)} ${currencySymbol(currency)}",
                 style = MaterialTheme.typography.bodyMedium,
+                color = if (isRefund) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
             )
 if (canEdit && !p.comment.startsWith("Сбор: ")) {
                 Spacer(Modifier.width(6.dp))

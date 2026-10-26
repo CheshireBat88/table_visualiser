@@ -69,6 +69,29 @@ class SummaryCalculatorTest {
     }
 
     @Test
+    fun fullRefundClearsPaidMonths() {
+        // Внёс 100 → вернули 100: баланс 0, и оплаченные месяцы «сгорают».
+        val g = group(payments = listOf(pay("A", 100.0), pay("A", 100.0, "Возврат: A")))
+        val s = SummaryCalculator.compute(g)
+        val a = s.rows.first { it.member.name == "A" }
+        assertEquals(listOf(0.0, 0.0, 0.0), a.perMonth)
+        assertEquals(0.0, a.totalPaid, 0.001)
+        assertEquals(0.0, a.balance, 0.001)
+        assertEquals(null, a.paidThrough)
+    }
+
+    @Test
+    fun partialRefundShrinksPaidMonths() {
+        // Внёс 250, вернули 100: распределяются только 150.
+        val g = group(payments = listOf(pay("A", 250.0), pay("A", 100.0, "Возврат: A")))
+        val s = SummaryCalculator.compute(g)
+        val a = s.rows.first { it.member.name == "A" }
+        assertEquals(listOf(100.0, 50.0, 0.0), a.perMonth)
+        assertEquals(150.0, a.totalPaid, 0.001)
+        assertEquals(150.0, a.balance, 0.001)
+    }
+
+    @Test
     fun sharedCollectionsRoundUpForEveryone() {
         val ms = members(13)
         val names = ms.map { it.name }

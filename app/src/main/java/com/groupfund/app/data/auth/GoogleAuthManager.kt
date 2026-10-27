@@ -118,7 +118,11 @@ class GoogleAuthManager(private val appContext: Context) {
     private fun requestToken(): TokenResult {
         val email = storedEmail()
             ?: return TokenResult.Error("Пользователь не вошёл в Google. Нажмите «Войти».")
-        val account = deviceAccount(email) ?: Account(email, "com.google")
+        val account = deviceAccount(email)
+            ?: run {
+                signOut()
+                return TokenResult.Error("Этот Google-аккаунт больше не доступен на устройстве. Войдите под аккаунтом, у которого есть доступ к таблице.")
+            }
         return try {
             val token = GoogleAuthUtil.getToken(
                 appContext,

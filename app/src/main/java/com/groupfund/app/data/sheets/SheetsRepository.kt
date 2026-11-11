@@ -173,6 +173,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         }
     }
 
+    /** Флаг: удалось ли прочитать лист «Сборы» (false при сетевой ошибке). Не чистить платежи по сборам при неуспешном чтении. */
+    private val collectionsReadOkBySheet = mutableMapOf<String, Boolean>()
+
     /** Собирает читаемый текст для UI/логов: код + эндпоинт + обрывок тела ответа. */
     private fun illegal(e: HttpException): Exception {
         val response = e.response()
@@ -1467,6 +1470,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      * Записывает значения и следом обновляет оформление листов.
      * Перед записью чистит «осиротевшие» платёжные строки сборов («Сбор: X», «Возврат из сбора: X»,
      * где сбора X больше нет) и дедуплицирует сборы по имени — лечит дубли/воскрешения от сбоев записи.
+     * Чистка применяется только когда «Сборы» прочитаны успешно (см. prepareWriteRanges).
      * Пишет данные одним batchUpdate, после чего отдельным (некритичным) вызовом зачищает «хвосты»:
      * так сбой записи не оставляет лист пустым и не ломает повтор при 429.
      */
@@ -1477,17 +1481,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         group: GroupData,
         data0: List<ValueRange>,
     ) {
-        val data = data0.map { range ->
-            when (range.range.substringBefore('!')) {
-                Tabs.PAYMENTS -> range.copy(
-                    values = SheetCodec.paymentsRows(sanitizeCollectionPayments(group.payments, group.collections)),
-                )
-                Tabs.COLLECTIONS -> range.copy(
-                    values = SheetCodec.collectionsRows(group.collections.distinctBy { it.name }),
-                )
-                else -> range
-            }
-        }
+        val data = prepareWriteRanges(group, collectionsReadOkBySheet[spreadsheetId] ?: true, data0)
         // Сначала пишем новые значения ровно по размеру данных, и только ПОСЛЕ успешной записи
         // чистим «хвосты» за их пределами. Раньше очистка шла первой: если batchUpdate падал,
         // лист оставался пустым, а retry при 429 перечитывал уже пустые данные — полная потеря.
@@ -1568,23 +1562,6 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         )
     }
 
-    /** Выкидывает платежи, помеченные сбором, которого больше нет в списке. */
-    private fun sanitizeCollectionPayments(
-        payments: List<PaymentData>,
-        collections: List<CollectionData>,
-    ): List<PaymentData> {
-        val validNames = collections.map { it.name }.toSet()
-        return payments.filter { p ->
-            when {
-                p.comment.startsWith("Сбор: ") ->
-                    p.comment.removePrefix("Сбор: ").trim() in validNames
-                p.comment.startsWith("Возврат из сбора: ") ->
-                    p.comment.removePrefix("Возврат из сбора: ").trim() in validNames
-                else -> true
-            }
-        }
-    }
-
     private fun parseDriveTime(raw: String?): Long = runCatching {
         OffsetDateTime.parse(raw).toInstant().toEpochMilli()
     }.getOrDefault(System.currentTimeMillis())
@@ -1602,30 +1579,13 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             "expenses" to "${Tabs.EXPENSES}!A1:E$READ_LEDGER_ROWS",
             "collections" to "${Tabs.COLLECTIONS}!A1:F$READ_LEDGER_ROWS",
         )
-        // Все листы одним batchGet — 1 запрос вместо 5 (экономит квоту чтения 60/мин).
-        // Если листа «Сборы» нет (старые таблицы) — batchGet падает, читаем по отдельности.
-        val raw: Map<String, List<List<Any?>>> = runCatching {
-            val resp = sheets.batchGetValues(
-                authHeader,
-                spreadsheetId,
-                BatchGetValuesRequest(ranges = ranges.map { it.second }),
-            )
-            val values = resp.valueRanges.orEmpty()
-            if (values.size != ranges.size) {
-                error("Ожидалось ${ranges.size} диапазонов, получено ${values.size}")
-            }
-            ranges.indices.associate { i -> ranges[i].first to (values[i].values.orEmpty()) }
-        }.getOrElse {
-            mapOf(
-                "settings" to (sheets.getValues(authHeader, spreadsheetId, ranges[0].second).values ?: emptyList()),
-                "members" to (sheets.getValues(authHeader, spreadsheetId, ranges[1].second).values ?: emptyList()),
-                "payments" to (sheets.getValues(authHeader, spreadsheetId, ranges[2].second).values ?: emptyList()),
-                "expenses" to (sheets.getValues(authHeader, spreadsheetId, ranges[3].second).values ?: emptyList()),
-                "collections" to runCatching {
-                    sheets.getValues(authHeader, spreadsheetId, ranges[4].second).values ?: emptyList()
-                }.getOrDefault(emptyList()),
-            )
+        val read = readRawSheets(sheets, authHeader, spreadsheetId, ranges)
+        collectionsReadOkBySheet[spreadsheetId] = read.collectionsReadOk
+        if (!read.collectionsReadOk) {
+            // Диагностика в поле: видно, когда защита от чистки реально сработала.
+            Log.w("GroupFund", "«Сборы» не прочитаны для $spreadsheetId — чистка платежей по сборам отключена")
         }
+        val raw = read.values
 
         val (hdr, months) = SheetCodec.parseSettings(raw["settings"].orEmpty())
         return GroupData(
@@ -1640,6 +1600,84 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             expenses = SheetCodec.parseExpenses(raw["expenses"].orEmpty()),
             collections = SheetCodec.parseCollections(raw["collections"].orEmpty()),
         )
+    }
+}
+
+/** Результат чтения листов: значения по вкладкам и признак успешного чтения «Сборов». */
+internal data class RawSheets(
+    val values: Map<String, List<List<Any?>>>,
+    val collectionsReadOk: Boolean,
+)
+
+/**
+ * Читает все листы одним batchGet — 1 запрос вместо 5 (экономит квоту чтения 60/мин).
+ * Если batchGet упал (например, у старых таблиц нет листа «Сборы») — читает по отдельности.
+ *
+ * Неудачное чтение «Сборов» НЕ подменяет таблицу пустым списком молча: возвращает
+ * collectionsReadOk=false, и очистка платежей по сборам отключается (см.
+ * sanitizeCollectionPayments). Ошибка чтения любого другого листа пробрасывается
+ * наружу — операция падает целиком, а не пишет данные по неполной картине.
+ */
+internal suspend fun readRawSheets(
+    sheets: SheetsApiService,
+    authHeader: String,
+    spreadsheetId: String,
+    ranges: List<Pair<String, String>>,
+): RawSheets {
+    var collectionsOk = true
+    val raw: Map<String, List<List<Any?>>> = runCatching {
+        val resp = sheets.batchGetValues(
+            authHeader,
+            spreadsheetId,
+            BatchGetValuesRequest(ranges = ranges.map { it.second }),
+        )
+        val values = resp.valueRanges.orEmpty()
+        if (values.size != ranges.size) {
+            error("Ожидалось ${ranges.size} диапазонов, получено ${values.size}")
+        }
+        ranges.indices.associate { i -> ranges[i].first to (values[i].values.orEmpty()) }
+    }.getOrElse { e ->
+        if (e is CancellationException) throw e
+        ranges.associate { (key, range) ->
+            if (key == "collections") {
+                val rows = runCatching {
+                    sheets.getValues(authHeader, spreadsheetId, range).values ?: emptyList()
+                }.getOrElse { ce ->
+                    if (ce is CancellationException) throw ce
+                    collectionsOk = false
+                    emptyList()
+                }
+                key to rows
+            } else {
+                key to (sheets.getValues(authHeader, spreadsheetId, range).values ?: emptyList())
+            }
+        }
+    }
+    return RawSheets(raw, collectionsOk)
+}
+
+/**
+ * Переписывает диапазоны под запись: «Платежи» проходят через sanitizeCollectionPayments
+ * (чистка «осиротевших» строк сборов), «Сборы» дедуплицируются по имени.
+ *
+ * [collectionsReadOk] приходит из последнего чтения (см. readRawSheets): при неудачном
+ * чтении «Сборов» чистка отключена — иначе запись стирала бы все платежи по сборам.
+ */
+internal fun prepareWriteRanges(
+    group: GroupData,
+    collectionsReadOk: Boolean,
+    data0: List<ValueRange>,
+): List<ValueRange> = data0.map { range ->
+    when (range.range.substringBefore('!')) {
+        Tabs.PAYMENTS -> range.copy(
+            values = SheetCodec.paymentsRows(
+                sanitizeCollectionPayments(group.payments, group.collections, collectionsReadOk),
+            ),
+        )
+        Tabs.COLLECTIONS -> range.copy(
+            values = SheetCodec.collectionsRows(group.collections.distinctBy { it.name }),
+        )
+        else -> range
     }
 }
 

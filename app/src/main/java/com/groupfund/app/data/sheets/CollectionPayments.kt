@@ -51,6 +51,37 @@ internal fun renameCollectionPaymentsToCancelled(
 }
 
 /**
+ * Выкидывает платежи, помеченные сбором, которого больше нет в списке («Сбор: X» /
+ * «Возврат из сбора: X» без сбора X).
+ *
+ * @param collectionsReadOk удалось ли в этом сеансе прочитать лист «Сборы». Если чтение
+ *   упало по ошибке (сеть, квота), список сборов НЕИЗВЕСТЕН — чистка отключается целиком:
+ *   иначе один неудачный readGroup приводил к массовому удалению всех платежей по сборам
+ *   при следующей записи (writeData гонит платежи через этот фильтр при каждом изменении).
+ *   «Сбора нет» (лист отсутствует у старых таблиц) и «не смогли прочитать» здесь не
+ *   различаются — при любых сомнениях ничего не удаляем.
+ */
+internal fun sanitizeCollectionPayments(
+    payments: List<PaymentData>,
+    collections: List<CollectionData>,
+    collectionsReadOk: Boolean,
+): List<PaymentData> {
+    if (!collectionsReadOk) {
+        return payments
+    }
+    val validNames = collections.map { it.name }.toSet()
+    return payments.filter { p ->
+        when {
+            p.comment.startsWith("Сбор: ") ->
+                p.comment.removePrefix("Сбор: ").trim() in validNames
+            p.comment.startsWith("Возврат из сбора: ") ->
+                p.comment.removePrefix("Возврат из сбора: ").trim() in validNames
+            else -> true
+        }
+    }
+}
+
+/**
  * Применяет один взнос по сбору к текущему состоянию (общая логика для одиночного
  * и пакетного внесения): обновляет вклад участника и пересобирает его платежи по сбору.
  * Пока вклад в пределах доли — прикрепляется транш строкой «Сбор: …»; при избытке —

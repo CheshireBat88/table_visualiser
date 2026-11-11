@@ -1,6 +1,7 @@
 package com.groupfund.app.data.sheets
 
 import android.util.Log
+import com.groupfund.app.runCatchingExceptCancellation
 import retrofit2.HttpException
 
 /** Диапазон хвоста листа «Индекс» — всё после данных (безопасный запас на случаи сокращения). */
@@ -109,7 +110,7 @@ class GroupIndexRepository(private val repository: SheetsRepository) {
             ),
         )
         // Метка «это индекс» — ищется ним же; сбой логируется, но не рушит создание.
-        runCatching {
+        runCatchingExceptCancellation {
             drive.patchFile(authHeader, response.spreadsheetId, DriveFilePatch(mapOf(INDEX_MARKER_KEY to INDEX_MARKER_VALUE)))
         }.onFailure { Log.w("SheetsApi", "patchFile index marker failed for ${response.spreadsheetId}", it) }
         cachedFileId = response.spreadsheetId

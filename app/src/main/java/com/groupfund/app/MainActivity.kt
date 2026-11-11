@@ -142,7 +142,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 delay(8000)
-                runCatching { BirthdayCheck.run(this@MainActivity) }
+                runCatchingExceptCancellation { BirthdayCheck.run(this@MainActivity) }
             }
         }
     }

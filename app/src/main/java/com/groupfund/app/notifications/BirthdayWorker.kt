@@ -3,6 +3,7 @@ package com.groupfund.app.notifications
 import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import com.groupfund.app.runCatchingExceptCancellation
 
 /**
  * Ежедневная фоновая проверка дней рождений.
@@ -13,7 +14,7 @@ class BirthdayWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
-        runCatching { BirthdayCheck.run(applicationContext) }
+        runCatchingExceptCancellation { BirthdayCheck.run(applicationContext) }
         return Result.success()
     }
 }

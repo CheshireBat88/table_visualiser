@@ -6,6 +6,7 @@ import com.groupfund.app.data.auth.GoogleAuthManager
 import com.groupfund.app.data.auth.OAuthConsentRequiredException
 import com.groupfund.app.data.auth.TokenResult
 import com.groupfund.app.data.registry.GroupEntry
+import com.groupfund.app.runCatchingExceptCancellation
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import okhttp3.OkHttpClient
@@ -267,18 +268,18 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         sheets.batchUpdateValues(authHeader, sid, BatchUpdateValuesRequest(data = values))
 
         // Красивое оформление листов сразу при создании.
-        runCatching {
+        runCatchingExceptCancellation {
             applyStyle(sheets, authHeader, sid, emptyGroup)
         }
 
         // Просмотр по ссылке — всем. Сбой не рушит создание, но логируется:
         // молчаливый провал превращался в 404 у наблюдателей.
-        runCatching {
+        runCatchingExceptCancellation {
             drive.addPermission(authHeader, sid, body = PermissionRequest())
         }.onFailure { Log.w("SheetsApi", "addPermission failed for $sid", it) }
 
         // Маркер «создано приложением» — чтобы дикий Drive-поиск легко находил наши группы.
-        runCatching {
+        runCatchingExceptCancellation {
             drive.patchFile(authHeader, sid, DriveFilePatch(mapOf(APP_MARKER_KEY to APP_MARKER_VALUE)))
         }.onFailure { Log.w("SheetsApi", "patchFile failed for $sid", it) }
 
@@ -387,7 +388,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     suspend fun readTransferMarker(spreadsheetId: String): Result<TransferMarker> =
         withToken { sheets, _, token ->
             val authHeader = "Bearer $token"
-            val rows = runCatching {
+            val rows = runCatchingExceptCancellation {
                 sheets.getValues(authHeader, spreadsheetId, TRANSFER_MARKER_RANGE).values.orEmpty()
             }.getOrDefault(emptyList())
             fun cell(row: Int, col: Int): String =
@@ -493,11 +494,11 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val copyId = copy.id ?: error("Google не вернул id копии")
 
         // Переносим права исходника на копию (кроме владельца — им становится получатель).
-        val perms = runCatching {
+        val perms = runCatchingExceptCancellation {
             drive.listPermissions(authHeader, spreadsheetId).permissions.orEmpty()
         }.getOrDefault(emptyList())
         perms.filter { it.role != "owner" }.forEach { p ->
-            runCatching {
+            runCatchingExceptCancellation {
                 drive.addPermission(
                     authHeader,
                     copyId,
@@ -567,7 +568,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                 val tabTitles = if (file.appProperties?.get(APP_MARKER_KEY) == APP_MARKER_VALUE) {
                     Tabs.CORE
                 } else {
-                    runCatching {
+                    runCatchingExceptCancellation {
                         sheets.getSpreadsheetMeta(authHeader, id, "sheets.properties.title")
                             .sheets.orEmpty()
                             .mapNotNull { it.properties?.title }
@@ -652,7 +653,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         authHeader: String,
         spreadsheetId: String,
     ) {
-        runCatching {
+        runCatchingExceptCancellation {
             sheets.batchUpdateSpreadsheet(
                 authHeader,
                 spreadsheetId,
@@ -1515,20 +1516,20 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         // Хвосты чистим некритично: сбой очистки не должен откатывать уже сделанную запись,
         // а повторная очистка произойдёт при следующей успешной записи.
         if (tails.isNotEmpty()) {
-            runCatching {
+            runCatchingExceptCancellation {
                 sheets.batchClearValues(authHeader, spreadsheetId, BatchClearValuesRequest(ranges = tails))
             }.onFailure {
                 Log.w("GroupFund", "tail clear failed: ${it.message}", it)
             }
         }
-        runCatching {
+        runCatchingExceptCancellation {
             applyStyle(sheets, authHeader, spreadsheetId, group)
         }.onFailure {
             Log.w("GroupFund", "applyStyle failed: ${it.message}", it)
         }
         // Диагностика после записи: если «Платежи» разошлись со «Сборами», это видно в логе,
         // а не только при ручном разборе таблицы.
-        runCatching {
+        runCatchingExceptCancellation {
             val warnings = CollectionConsistency.mismatches(group)
             if (warnings.isNotEmpty()) {
                 Log.w("GroupFund", "Collection consistency:\n" + warnings.joinToString("\n"))

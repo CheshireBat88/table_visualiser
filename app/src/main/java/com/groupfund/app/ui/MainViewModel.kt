@@ -15,6 +15,7 @@ import com.groupfund.app.data.sheets.SheetCodec
 import com.groupfund.app.data.sheets.SheetsRepository
 import com.groupfund.app.data.sheets.observerToCreatorCandidates
 import com.groupfund.app.notifications.BirthdayCheck
+import com.groupfund.app.runCatchingExceptCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -110,7 +111,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refreshGroupsAvailability()
         // Проверяем ДР сразу после входа, не дожидаясь перезапуска приложения.
         viewModelScope.launch {
-            runCatching { BirthdayCheck.run(getApplication()) }
+            runCatchingExceptCancellation { BirthdayCheck.run(getApplication()) }
         }
         // Если до входа пришли по QR-приглашению — подключаемся.
         processPendingInvite()
@@ -145,7 +146,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (newTitle.isBlank()) return
         viewModelScope.launch {
             val email = auth.storedEmail() ?: return@launch
-            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
+            val entry = runCatchingExceptCancellation { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             if (entry.role != "creator") {
                 registry.renameGroup(email, entryId, newTitle)
                 return@launch
@@ -372,7 +373,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun startTransfer(entryId: String) {
         viewModelScope.launch {
             val email = auth.storedEmail() ?: return@launch
-            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
+            val entry = runCatchingExceptCancellation { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             if (entry.role != "creator") return@launch
             // Не даём инициировать вторую передачу по той же группе: в локальном списке
             // и/или в маркере таблицы уже может быть активная (или завершённая) передача.
@@ -427,7 +428,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun cancelTransfer(entryId: String) {
         viewModelScope.launch {
             val email = auth.storedEmail() ?: return@launch
-            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
+            val entry = runCatchingExceptCancellation { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             repository.clearTransferPending(entry.spreadsheetId)
                 .onSuccess {
                     _uiState.update { s ->
@@ -455,7 +456,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (newId.isEmpty()) return
         viewModelScope.launch {
             val email = auth.storedEmail() ?: return@launch
-            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
+            val entry = runCatchingExceptCancellation { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             if (entry.spreadsheetId == newId) return@launch
             val marker = repository.readTransferMarker(entry.spreadsheetId).getOrNull()
             if (marker?.newSpreadsheetId != null) {
@@ -494,7 +495,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteRetiredCopy(entryId: String) {
         viewModelScope.launch {
             val email = auth.storedEmail() ?: return@launch
-            val entry = runCatching { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
+            val entry = runCatchingExceptCancellation { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
             val retired = entry.retiredSpreadsheetId ?: return@launch
             repository.deleteFromDrive(retired)
                 .onSuccess {

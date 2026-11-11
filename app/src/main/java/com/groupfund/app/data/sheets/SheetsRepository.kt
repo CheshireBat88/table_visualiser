@@ -872,35 +872,15 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             contrib = collection.contrib + (memberName to newContrib),
         )
         val newCollections = group.collections.map { if (it.name == collectionName) updatedColl else it }
-        val tag = "Сбор: $collectionName"
-        // Переносим move из «будущих» месячных взносов участника: идём с конца списка,
-        // урезаем самые поздние месячные платежи (без тегов сборов и возвратов), баланс не меняется.
-        var remaining = move
-        val monthlyPayments = group.payments
-            .filter {
-                it.member == memberName &&
-                    !it.comment.startsWith("Сбор:") &&
-                    !it.comment.startsWith("Возврат из сбора") &&
-                    !it.comment.startsWith(SummaryCalculator.REFUND_TAG_PREFIX)
-            }
-            .sortedBy { it.date }
-        val adjustedTail = mutableListOf<PaymentData>()
-        for (p in monthlyPayments.asReversed()) {
-            if (remaining <= 0.005) break
-            val take = round2(minOf(remaining, p.amount))
-            remaining = round2(remaining - take)
-            val left = round2(p.amount - take)
-            if (left > 0.005) adjustedTail += p.copy(amount = left)
-        }
-        if (remaining > 0.005) error("Недостаточно внесённых месячных взносов участника")
-        val keptMonthly = group.payments
-            .filter {
-                it.member != memberName ||
-                    it.comment.startsWith("Сбор:") ||
-                    it.comment.startsWith("Возврат из сбора") ||
-                    it.comment.startsWith(SummaryCalculator.REFUND_TAG_PREFIX)
-            }
-        val newPayments = keptMonthly + adjustedTail + PaymentData(memberName, SheetCodec.today(), move, tag)
+        // Переносим move из «будущих» месячных взносов участника: урезаются самые
+        // поздние месячные платежи (без тегов сборов и возвратов), ранние остаются
+        // целиком (N6). Баланс не меняется.
+        val newPayments = reclassifyMonthlyToCollectionPayments(
+            group.payments,
+            memberName,
+            collectionName,
+            move,
+        )
         val updated = group.copy(collections = newCollections, payments = newPayments)
         val newSummary = SummaryCalculator.compute(updated)
         writeData(

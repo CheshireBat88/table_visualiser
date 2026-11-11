@@ -99,6 +99,59 @@ internal fun sanitizeCollectionPayments(
 }
 
 /**
+ * Пересборка платежей при переносе свободного месячного остатка участника в сбор
+ * (см. SheetsRepository.reclassifyMonthlyToCollection).
+ *
+ * Переносим [move] из «будущих» месячных взносов участника: идём с конца списка,
+ * урезаем самые поздние месячные платежи участника (без тегов сборов и возвратов).
+ * Когда нужная сумма набрана, более ранние платежи остаются целиком. Полностью
+ * израсходованные строки уходят, вместо них добавляется строка «Сбор: X» на [move].
+ *
+ * N6: раньше ранние нетегированные платежи терялись — цикл урезания обрывался по
+ * достижении суммы, а сборка новых платежей выкидывала ВСЕ нетегированные строки
+ * участника и возвращала только урезанные: всё, что цикл не успел обойти, молча
+ * исчезало из таблицы вместе с балансом участника.
+ */
+internal fun reclassifyMonthlyToCollectionPayments(
+    payments: List<PaymentData>,
+    memberName: String,
+    collectionName: String,
+    move: Double,
+): List<PaymentData> {
+    val tag = "Сбор: $collectionName"
+    var remaining = move
+    val monthlyPayments = payments
+        .filter {
+            it.member == memberName &&
+                !it.comment.startsWith("Сбор:") &&
+                !it.comment.startsWith("Возврат из сбора") &&
+                !it.comment.startsWith(SummaryCalculator.REFUND_TAG_PREFIX)
+        }
+        .sortedBy { it.date }
+    val adjustedTail = mutableListOf<PaymentData>()
+    for (p in monthlyPayments.asReversed()) {
+        if (remaining <= 0.005) {
+            // Сумма набрана: более ранние платежи остаются целиком (N6).
+            adjustedTail += p
+            continue
+        }
+        val take = round2(minOf(remaining, p.amount))
+        remaining = round2(remaining - take)
+        val left = round2(p.amount - take)
+        if (left > 0.005) adjustedTail += p.copy(amount = left)
+    }
+    if (remaining > 0.005) error("Недостаточно внесённых месячных взносов участника")
+    val keptMonthly = payments
+        .filter {
+            it.member != memberName ||
+                it.comment.startsWith("Сбор:") ||
+                it.comment.startsWith("Возврат из сбора") ||
+                it.comment.startsWith(SummaryCalculator.REFUND_TAG_PREFIX)
+        }
+    return keptMonthly + adjustedTail + PaymentData(memberName, SheetCodec.today(), move, tag)
+}
+
+/**
  * Применяет один взнос по сбору к текущему состоянию (общая логика для одиночного
  * и пакетного внесения): обновляет вклад участника и пересобирает его платежи по сбору.
  * Пока вклад в пределах доли — прикрепляется транш строкой «Сбор: …»; при избытке —

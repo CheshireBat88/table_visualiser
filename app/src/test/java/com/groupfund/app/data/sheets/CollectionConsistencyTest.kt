@@ -125,11 +125,12 @@ class CollectionConsistencyTest {
         )
         val renamed = renameCollectionPaymentsToCancelled(payments, "Gift")
         assertEquals(4, renamed.size)
-        // «Сбор: Gift» → «Отмененный сбор: Gift», суммы и даты сохранены
+        // «Сбор: Gift» и «Возврат из сбора: Gift» → «Отмененный сбор: Gift»,
+        // суммы и даты сохранены
         assertEquals(PaymentData("A", "2026-01-01", 100.0, "Отмененный сбор: Gift"), renamed[0])
         assertEquals(PaymentData("B", "2026-01-02", 50.0, "Отмененный сбор: Gift"), renamed[1])
-        // Излишек и обычный платёж не тронуты
-        assertEquals(payments[2], renamed[2])
+        assertEquals(PaymentData("A", "2026-01-03", 20.0, "Отмененный сбор: Gift"), renamed[2])
+        // Обычный платёж не тронут
         assertEquals(payments[3], renamed[3])
     }
 
@@ -150,6 +151,7 @@ class CollectionConsistencyTest {
             collections = listOf(coll(emptyMap())),
             payments = listOf(
                 PaymentData("A", "2026-01-01", 100.0, "Сбор: Gift"),
+                PaymentData("A", "2026-01-02", 30.0, "Возврат из сбора: Gift"),
                 PaymentData("B", "2026-01-01", 50.0, "Сбор: Gift"),
             ),
         )
@@ -157,11 +159,50 @@ class CollectionConsistencyTest {
         val s = SummaryCalculator.compute(g.copy(collections = emptyList(), payments = payments))
         val a = s.rows.first { it.member.name == "A" }
         val b = s.rows.first { it.member.name == "B" }
-        // Всё внесённое вернулось в месячные взносы: A оплатил 100, B — 50; C не вносил.
+        // Всё внесённое осталось у участников: A внёс 130 (100 + возврат 30) — месяц
+        // закрыт целиком (100), излишек 30 остался в балансе; B — 50; C не вносил.
         assertEquals(100.0, a.perMonth.sum(), 0.001)
+        assertEquals(130.0, a.balance, 0.001)
         assertEquals(50.0, b.perMonth.sum(), 0.001)
-        assertEquals(100.0, a.balance, 0.001)
         assertEquals(50.0, b.balance, 0.001)
         assertEquals(0.0, s.rows.first { it.member.name == "C" }.balance, 0.001)
+    }
+
+    @Test
+    fun `после удаления сбора чистка записи не съедает строки возврата (N4)`() {
+        // Сценарий бага: deleteCollection оставлял «Возврат из сбора: X» с прежним тегом,
+        // а writeData в той же записи прогонял платежи через sanitizeCollectionPayments —
+        // сбор X уже удалён, и излишек молча исчезал из таблицы.
+        val payments = listOf(
+            PaymentData("A", "2026-01-01", 100.0, "Сбор: Gift"),
+            PaymentData("A", "2026-01-02", 20.0, "Возврат из сбора: Gift"),
+            PaymentData("B", "2026-01-03", 300.0, ""),
+        )
+        val renamed = renameCollectionPaymentsToCancelled(payments, "Gift")
+        val g = group(collections = emptyList(), payments = renamed)
+        val out = prepareWriteRanges(
+            g,
+            collectionsReadOk = true,
+            data0 = listOf(ValueRange("Платежи!A1:D100", emptyList())),
+        )
+        val rows = out.single().values
+        // Заголовок + все 3 платежа: ни одна строка не потеряна при записи.
+        assertEquals(4, rows.size)
+        assertEquals("Отмененный сбор: Gift", rows[1][3])
+        assertEquals("Отмененный сбор: Gift", rows[2][3])
+        assertEquals(300.0, rows[3][2])
+    }
+
+    @Test
+    fun `переименование ловит строки с пробелами вокруг имени сбора`() {
+        // Сопоставление как у чистки (префикс + trim): «Сбор:  Gift » иначе остался бы
+        // с прежним тегом и был бы удалён чисткой как «осиротевший».
+        val payments = listOf(
+            PaymentData("A", "2026-01-01", 10.0, "Сбор:  Gift "),
+            PaymentData("B", "2026-01-02", 15.0, "Возврат из сбора:  Gift "),
+        )
+        val renamed = renameCollectionPaymentsToCancelled(payments, "Gift")
+        assertEquals("Отмененный сбор: Gift", renamed[0].comment)
+        assertEquals("Отмененный сбор: Gift", renamed[1].comment)
     }
 }

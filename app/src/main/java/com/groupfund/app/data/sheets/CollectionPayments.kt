@@ -36,18 +36,35 @@ internal fun removeMemberCollectionPayments(
 }
 
 /**
- * Переводит платежи удаляемого сбора в обычные взносы: «Сбор: X» переименовывается
- * в «Отмененный сбор: X» (суммы и даты сохраняются). «Возврат из сбора: X» остаётся
- * как есть — излишек уже зачислен в месячный баланс. Итог: в месячные взносы
- * возвращается ровно всё, что участник внёс в сбор.
+ * Переводит платежи удаляемого сбора в обычные взносы: «Сбор: X» и «Возврат из сбора: X»
+ * переименовываются в «Отмененный сбор: X» (суммы и даты сохраняются). Итог: в месячные
+ * взносы возвращается ровно всё, что участник внёс в сбор — и доля, и сверхдолевой излишек.
+ *
+ * Возвраты тоже переименовываются (N4): строки «Возврат из сбора: X» с прежним тегом
+ * выкидывались чисткой осиротевших строк (sanitizeCollectionPayments в writeData) прямо
+ * в той же записи удаления — сбора X уже нет, и излишек молча исчезал из таблицы. Оба
+ * тега считаются в балансе одинаково (обычный доход), поэтому переименование не меняет
+ * суммы — только спасает строки.
+ *
+ * Сопоставление как в чистке: префикс + имя с обрезкой пробелов, поэтому строки с
+ * случайными пробелами вокруг имени («Сбор:  X ») тоже переименовываются, а не
+ * удаляются чисткой как «осиротевшие».
  */
 internal fun renameCollectionPaymentsToCancelled(
     payments: List<PaymentData>,
     collectionName: String,
 ): List<PaymentData> {
-    val tag = "Сбор: $collectionName"
     val cancelled = "${SummaryCalculator.CANCELLED_COLLECTION_TAG_PREFIX}$collectionName"
-    return payments.map { if (it.comment == tag) it.copy(comment = cancelled) else it }
+    fun belongsToDeleted(payment: PaymentData): Boolean {
+        val name = when {
+            payment.comment.startsWith("Сбор: ") -> payment.comment.removePrefix("Сбор: ").trim()
+            payment.comment.startsWith("Возврат из сбора: ") ->
+                payment.comment.removePrefix("Возврат из сбора: ").trim()
+            else -> return false
+        }
+        return name == collectionName
+    }
+    return payments.map { if (belongsToDeleted(it)) it.copy(comment = cancelled) else it }
 }
 
 /**

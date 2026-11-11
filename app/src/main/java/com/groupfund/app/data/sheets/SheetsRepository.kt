@@ -626,10 +626,14 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         comment: String = "",
     ): Result<GroupData> = withToken { sheets, _, token ->
         val authHeader = "Bearer $token"
+        // Служебные строки сборов руками не вносятся (P0.7): с несуществующим сбором
+        // чистка удалила бы строку прямо в этой же записи, с существующим — сломала
+        // бы соответствие вклада и сводку. Возвраты «Возврат: …» не блокируются.
+        manualPaymentCommentError(comment)?.let { error(it) }
         val group = readGroup(sheets, token, spreadsheetId)
         val updated = group.copy(
             payments = group.payments +
-                PaymentData(member, SheetCodec.today(), round2(amount), comment),
+                PaymentData(member, SheetCodec.today(), round2(amount), comment.trim()),
         )
         val summary = SummaryCalculator.compute(updated)
         writeData(
@@ -821,6 +825,11 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                 collections = c
                 payments = p
             } else {
+                // Защита (P0.7): «Возврат из сбора: X» руками не вносится — строка без
+                // пересборки вклада была бы удалена чисткой как «осиротевшая» в этой же
+                // записи. UI такой комментарий собрать не может, проверка на случай
+                // будущих вызывающих.
+                manualPaymentCommentError(input.comment)?.let { error(it) }
                 payments = payments + PaymentData(input.member, today, round2(input.amount), input.comment)
             }
         }

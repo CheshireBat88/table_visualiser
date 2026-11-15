@@ -8,7 +8,9 @@ import com.groupfund.app.data.auth.TokenResult
 import com.groupfund.app.data.registry.GroupEntry
 import com.groupfund.app.runCatchingExceptCancellation
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.HttpException
@@ -25,6 +27,28 @@ data class PaymentInput(
     val amount: Double,
     val comment: String = "",
 )
+
+/**
+ * Выполняет пост-обработку только что созданного файла и при её сбое удаляет файл,
+ * чтобы не оставлять осиротевшую таблицу (создание могло упасть уже после
+ * createSpreadsheet — например, на записи данных или выдаче прав).
+ *
+ * Ошибка очистки не затирает исходную: пользователю показывается настоящая причина,
+ * а сбой удаления уходит в [onCleanupError] для лога. Очистка идёт в NonCancellable:
+ * отмена корутины не должна обрывать удаление наполовину созданной таблицы.
+ */
+internal suspend fun withOrphanCleanup(
+    cleanup: suspend () -> Unit,
+    onCleanupError: (Throwable) -> Unit = {},
+    block: suspend () -> Unit,
+) {
+    try {
+        block()
+    } catch (e: Throwable) {
+        runCatching { withContext(NonCancellable) { cleanup() } }.onFailure(onCleanupError)
+        throw e
+    }
+}
 
 /** Таблица не найдена: удалена или доступ к ней ограничен (HTTP 404 от Google). */
 class NotFoundException(message: String, cause: Throwable?) : Exception(message, cause)
@@ -93,8 +117,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         buildApi(DriveApiService::class.java, "https://www.googleapis.com/")
     }
 
-    /** sheetId по имени листа (кэш: id листов не меняются). */
-    private val sheetIdCache = mutableMapOf<String, Map<String, Int>>()
+    /** sheetId по имени листа (кэш: id листов не меняются, пока набор листов тот же). */
+    private val sheetIdCache = SheetIdCache()
 
     private fun <T> buildApi(klass: Class<T>, baseUrl: String): T {
         val client = OkHttpClient.Builder()
@@ -265,23 +289,32 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                 SummaryCalculator.emptySummaryRows(emptyGroup, draft.months),
             ),
         )
-        sheets.batchUpdateValues(authHeader, sid, BatchUpdateValuesRequest(data = values))
+        withOrphanCleanup(
+            cleanup = { drive.deleteFile(authHeader, sid) },
+            onCleanupError = { Log.w("SheetsApi", "cleanup deleteFile failed for $sid", it) },
+        ) {
+            // Запись данных идемпотентна: при 429 повторяем шаг, а не создание файла.
+            retryOnRateLimit {
+                sheets.batchUpdateValues(authHeader, sid, BatchUpdateValuesRequest(data = values))
+            }
 
-        // Красивое оформление листов сразу при создании.
-        runCatchingExceptCancellation {
-            applyStyle(sheets, authHeader, sid, emptyGroup)
+            // Красивое оформление листов сразу при создании — не критично: данные уже записаны.
+            runCatchingExceptCancellation {
+                applyStyle(sheets, authHeader, sid, emptyGroup)
+            }.onFailure { Log.w("SheetsApi", "applyStyle failed for $sid", it) }
+
+            // Просмотр по ссылке — всем. Раньше сбой молча оставлял группу без доступа
+            // у наблюдателей (404); теперь повторяем, а при окончательном сбое удаляем
+            // наполовину созданную таблицу, чтобы не плодить осиротевшие файлы.
+            retryOnRateLimit {
+                drive.addPermission(authHeader, sid, body = PermissionRequest())
+            }
+
+            // Маркер «создано приложением» — чтобы дикий Drive-поиск легко находил наши группы.
+            retryOnRateLimit {
+                drive.patchFile(authHeader, sid, DriveFilePatch(mapOf(APP_MARKER_KEY to APP_MARKER_VALUE)))
+            }
         }
-
-        // Просмотр по ссылке — всем. Сбой не рушит создание, но логируется:
-        // молчаливый провал превращался в 404 у наблюдателей.
-        runCatchingExceptCancellation {
-            drive.addPermission(authHeader, sid, body = PermissionRequest())
-        }.onFailure { Log.w("SheetsApi", "addPermission failed for $sid", it) }
-
-        // Маркер «создано приложением» — чтобы дикий Drive-поиск легко находил наши группы.
-        runCatchingExceptCancellation {
-            drive.patchFile(authHeader, sid, DriveFilePatch(mapOf(APP_MARKER_KEY to APP_MARKER_VALUE)))
-        }.onFailure { Log.w("SheetsApi", "patchFile failed for $sid", it) }
 
         GroupEntry(
             id = UUID.randomUUID().toString(),
@@ -651,13 +684,15 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
 
     /**
      * Добавляет лист «Сборы», если его ещё нет (старые таблицы). Ошибку «уже есть» глотаем.
+     * После успешного добавления сбрасываем кэш sheetId: иначе оформление и очистка
+     * хвостов работали бы по старой карте без нового листа.
      */
     private suspend fun ensureCollectionsTab(
         sheets: SheetsApiService,
         authHeader: String,
         spreadsheetId: String,
     ) {
-        runCatchingExceptCancellation {
+        val added = runCatchingExceptCancellation {
             sheets.batchUpdateSpreadsheet(
                 authHeader,
                 spreadsheetId,
@@ -671,7 +706,13 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                     ),
                 ),
             )
-        }
+        }.isSuccess
+        if (added) sheetIdCache.invalidate(spreadsheetId)
+    }
+
+    /** Сбрасывает кэш sheetId (выход из аккаунта: чужие таблицы не должны переиспользовать карту). */
+    internal fun clearSheetIdCache() {
+        sheetIdCache.clear()
     }
 
     /** Создаёт отдельный сбор: цель делится поровну на выбранных участников. */
@@ -715,8 +756,10 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     }
 
     /**
-     * Галочка «сдал»: участник вносит всю свою долю одним платежом; при снятии — вклад убирается.
-     * Платежи по сбору этого участника пересобираются, как отдельные строки.
+     * Галочка «сдал»: вклад доводится до доли, но не уменьшается, если участник уже
+     * внёс больше (переплата сохраняется). При снятии вклад убирается, строки «Сбор: X»
+     * удаляются, а излишек «Возврат из сбора: X» становится обычным платежом.
+     * Платежи по сбору этого участника пересобираются канонически (см. setMemberPaid).
      */
     suspend fun toggleMemberPaid(
         spreadsheetId: String,
@@ -732,26 +775,14 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val wasPaid = memberName in collection.paid
         if (wasPaid == paid) return@withToken group
 
-        val share = collection.sharePerPerson
-        val updatedColl = if (paid) {
-            collection.copy(contrib = collection.contrib + (memberName to share))
-        } else {
-            collection.copy(contrib = collection.contrib - memberName)
-        }
+        val (updatedColl, newPayments) = setMemberPaid(
+            collection,
+            memberName,
+            paid,
+            group.payments,
+            SheetCodec.today(),
+        )
         val newCollections = group.collections.map { if (it.name == collectionName) updatedColl else it }
-        val tag = "Сбор: $collectionName"
-        val newPayments = if (paid) {
-            // Доплата недостающей части до доли — отдельной строкой, не перезаписывая прошлые транши.
-            val topUp = round2(share - collection.contributed(memberName))
-            if (topUp > 0) {
-                group.payments + PaymentData(memberName, SheetCodec.today(), topUp, tag)
-            } else {
-                group.payments
-            }
-        } else {
-            // Снимаем взнос, но оставляем «Возврат из сбора» — он уже зачислен в месячный баланс.
-            removeMemberCollectionPayments(group.payments, memberName, collectionName, keepRefunds = true)
-        }
         val updated = group.copy(collections = newCollections, payments = newPayments)
         val newSummary = SummaryCalculator.compute(updated)
         writeData(
@@ -1286,6 +1317,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      * платёжных строк участника («Сбор: X» + «Возврат из сбора: X»), а не «взнос минус удалённая
      * сумма»: так удаление дубля строки не затирает реально внесённую сумму, а удаление
      * лишнего платежа не «воскрешает» канонические строки.
+     * Строки участника по этому сбору сразу пересобираются в каноническом виде
+     * (rebuildMemberCollectionPayments): иначе удаление одной «Сбор: X» оставляло
+     * «Возврат из сбора: X» без взноса — деньги считались бы и вкладом, и доходом.
      * Пересчитывает сводку и перезаписывает вкладки целиком.
      */
     suspend fun deletePayment(
@@ -1298,38 +1332,51 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val payment = group.payments[index]
         val remaining = group.payments.toMutableList().also { it.removeAt(index) }
 
-        val targetCollection = when {
-            payment.comment.startsWith("Сбор: ") ->
-                payment.comment.removePrefix("Сбор: ").trim()
-            payment.comment.startsWith("Возврат из сбора: ") ->
-                payment.comment.removePrefix("Возврат из сбора: ").trim()
-            else -> null
-        }
+        val targetCollection = collectionTagTarget(payment.comment)
 
         var collections = group.collections
         val updatedCollection = targetCollection?.let { name ->
             collections.firstOrNull { it.name == name }
         }
-        if (updatedCollection != null) {
+        // Пересобираем строки только самого участника и только если он входит в сбор:
+        // возвраты исключённых участников уже зачислены в их месячный баланс, и трогать
+        // их при удалении чужой строки нельзя.
+        val payments = if (updatedCollection != null && payment.member in updatedCollection.participants) {
             val member = payment.member
-            val tag = "Сбор: ${targetCollection}"
-            val leftover = "Возврат из сбора: ${targetCollection}"
-            val newContrib = round2(
-                remaining.filter {
-                    it.member == member && (it.comment == tag || it.comment == leftover)
-                }.sumOf { it.amount },
-            )
-            val adjusted = if (newContrib <= 0.005) {
-                updatedCollection.contrib - member
-            } else {
-                updatedCollection.contrib + (member to newContrib)
+            val tagged = remaining.filter {
+                it.member == member && collectionTagTarget(it.comment) == updatedCollection.name
             }
+            // Вклад = всё, что осталось помечено сбором: доля в «Сбор: X» и излишек
+            // в «Возврат из сбора: X». Пересборка из этой суммы восстанавливает
+            // каноническое соответствие и не оставляет возврат без сбора.
+            val newContrib = round2(tagged.sumOf { it.amount })
             collections = collections.map {
-                if (it.name == targetCollection) it.copy(contrib = adjusted) else it
+                if (it.name == updatedCollection.name) {
+                    it.copy(
+                        contrib = if (newContrib < 0.005) {
+                            it.contrib - member
+                        } else {
+                            it.contrib + (member to newContrib)
+                        },
+                    )
+                } else {
+                    it
+                }
             }
+            val date = tagged.maxOfOrNull { it.date } ?: payment.date
+            rebuildMemberCollectionPayments(
+                remaining,
+                member,
+                updatedCollection.name,
+                newContrib,
+                updatedCollection.sharePerPerson,
+                date,
+            )
+        } else {
+            remaining
         }
 
-        val updated = group.copy(collections = collections, payments = remaining)
+        val updated = group.copy(collections = collections, payments = payments)
         val summary = SummaryCalculator.compute(updated)
         val changes = mutableListOf(
             vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(updated.payments)),
@@ -1421,7 +1468,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         authHeader: String,
         spreadsheetId: String,
     ): Map<String, Int> {
-        sheetIdCache[spreadsheetId]?.let { return it }
+        sheetIdCache.get(spreadsheetId)?.let { return it }
         val meta = sheets.getSpreadsheetMeta(
             authHeader,
             spreadsheetId,
@@ -1432,7 +1479,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             val id = p.sheetId ?: return@mapNotNull null
             (p.title ?: "") to id
         }.toMap()
-        sheetIdCache[spreadsheetId] = map
+        sheetIdCache.put(spreadsheetId, map)
         return map
     }
 
@@ -1580,6 +1627,15 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val raw = read.values
 
         val (hdr, months) = SheetCodec.parseSettings(raw["settings"].orEmpty())
+        val (collections, contribConflicts) =
+            SheetCodec.parseCollectionsWithWarnings(raw["collections"].orEmpty())
+        contribConflicts.forEach {
+            Log.w(
+                "GroupFund",
+                "Сбор «${it.collection}»: вклад «${it.member}» расходится " +
+                    "(${it.kept} vs ${it.dropped}) — оставлен больший",
+            )
+        }
         return GroupData(
             spreadsheetId = spreadsheetId,
             title = hdr.title.ifEmpty { "Группа" },
@@ -1590,7 +1646,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             members = SheetCodec.parseMembers(raw["members"].orEmpty()),
             payments = SheetCodec.parsePayments(raw["payments"].orEmpty()),
             expenses = SheetCodec.parseExpenses(raw["expenses"].orEmpty()),
-            collections = SheetCodec.parseCollections(raw["collections"].orEmpty()),
+            collections = collections,
         )
     }
 }

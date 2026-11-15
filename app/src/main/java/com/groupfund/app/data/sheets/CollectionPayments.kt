@@ -59,6 +59,115 @@ internal fun removeMemberCollectionPayments(
 }
 
 /**
+ * Имя сбора из служебного комментария платежа («Сбор: X» / «Возврат из сбора: X»)
+ * либо null для обычного платежа.
+ *
+ * Сопоставление — префикс + trim, как в чистке осиротевших строк: строки с лишними
+ * пробелами вокруг имени («Сбор:  X ») тоже относятся к сбору X.
+ */
+internal fun collectionTagTarget(comment: String): String? = when {
+    comment.startsWith(SummaryCalculator.COLLECTION_TAG_PREFIX) ->
+        comment.removePrefix(SummaryCalculator.COLLECTION_TAG_PREFIX).trim()
+    comment.startsWith(SummaryCalculator.COLLECTION_REFUND_TAG_PREFIX) ->
+        comment.removePrefix(SummaryCalculator.COLLECTION_REFUND_TAG_PREFIX).trim()
+    else -> null
+}
+
+/**
+ * Пересобирает платежи одного участника по одному сбору в каноническом виде
+ * из итогового вклада [contrib] (см. CollectionConsistency):
+ *   - вклад <= 0            → строк этого участника по сбору нет;
+ *   - вклад <= доли         → одна строка «Сбор: X» на весь вклад;
+ *   - вклад > доли          → «Сбор: X» на долю + «Возврат из сбора: X» на излишек.
+ *
+ * Строки других участников не трогаются: пересборка точечная. Это важно для
+ * исключённых участников — их возвраты уже зачислены в месячный баланс и должны
+ * пережить любые операции с оставшимися участниками.
+ */
+internal fun rebuildMemberCollectionPayments(
+    payments: List<PaymentData>,
+    memberName: String,
+    collectionName: String,
+    contrib: Double,
+    share: Double,
+    date: String,
+): List<PaymentData> {
+    val rest = payments.filterNot {
+        it.member == memberName && collectionTagTarget(it.comment) == collectionName
+    }
+    val total = round2(contrib)
+    if (total < 0.01) return rest
+    val paid = round2(minOf(total, share))
+    val rebuilt = mutableListOf(PaymentData(memberName, date, paid, "Сбор: $collectionName"))
+    val excess = round2(total - paid)
+    if (excess >= 0.01) {
+        rebuilt += PaymentData(memberName, date, excess, "Возврат из сбора: $collectionName")
+    }
+    return rest + rebuilt
+}
+
+/**
+ * Снимает у участника отметку «сдал» без потери уже зачисленного излишка:
+ * строки «Сбор: X» удаляются (вклад откатывается), а «Возврат из сбора: X»
+ * становится обычным платежом без комментария. Деньги сверх доли реально внесены
+ * и уже учтены в балансе — они не должны исчезнуть вместе с отметкой.
+ */
+internal fun clearMemberCollectionPayments(
+    payments: List<PaymentData>,
+    memberName: String,
+    collectionName: String,
+): List<PaymentData> = payments.mapNotNull { p ->
+    if (p.member != memberName || collectionTagTarget(p.comment) != collectionName) {
+        p
+    } else if (p.comment.startsWith(SummaryCalculator.COLLECTION_REFUND_TAG_PREFIX)) {
+        p.copy(comment = "")
+    } else {
+        null
+    }
+}
+
+/**
+ * Переключает отметку «сдал» участника сбора.
+ *
+ * `paid = true` доводит вклад ровно до доли, но НЕ уменьшает уже внесённое:
+ * `max(текущий вклад, доля)`. Иначе отметка «сдал» затирала бы переплату и
+ * связанный с ней возврат. Платежи пересобираются канонически.
+ *
+ * `paid = false` убирает вклад и строки «Сбор: X», а «Возврат из сбора: X»
+ * превращает в обычный платёж (см. clearMemberCollectionPayments) — иначе
+ * возврат оставался бы без сбора, учитываясь одновременно как вклад и доход.
+ */
+internal fun setMemberPaid(
+    collection: CollectionData,
+    memberName: String,
+    paid: Boolean,
+    payments: List<PaymentData>,
+    date: String,
+): Pair<CollectionData, List<PaymentData>> {
+    if (memberName !in collection.participants) error("Участник не в этом сборе")
+    val share = collection.sharePerPerson
+    val newContrib = if (paid) round2(maxOf(collection.contributed(memberName), share)) else 0.0
+    val updatedCollection = if (newContrib < 0.005) {
+        collection.copy(contrib = collection.contrib - memberName)
+    } else {
+        collection.copy(contrib = collection.contrib + (memberName to newContrib))
+    }
+    val newPayments = if (paid) {
+        rebuildMemberCollectionPayments(
+            payments,
+            memberName,
+            collection.name,
+            newContrib,
+            share,
+            date,
+        )
+    } else {
+        clearMemberCollectionPayments(payments, memberName, collection.name)
+    }
+    return updatedCollection to newPayments
+}
+
+/**
  * Переводит платежи удаляемого сбора в обычные взносы: «Сбор: X» и «Возврат из сбора: X»
  * переименовываются в «Отмененный сбор: X» (суммы и даты сохраняются). Итог: в месячные
  * взносы возвращается ровно всё, что участник внёс в сбор — и доля, и сверхдолевой излишек.

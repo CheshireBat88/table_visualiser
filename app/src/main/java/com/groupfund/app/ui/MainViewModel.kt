@@ -345,6 +345,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun signOut() {
         auth.signOut()
+        repository.clearSheetIdCache()
         refreshSignedIn()
     }
 

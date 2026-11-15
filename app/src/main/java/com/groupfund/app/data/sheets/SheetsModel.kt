@@ -421,10 +421,35 @@ object SheetCodec {
         return rows
     }
 
-fun parseCollections(rows: List<List<Any?>>): List<CollectionData> {
+    /**
+     * Расхождение вкладов при слиянии строк-дублей сбора с одинаковым именем.
+     * Хранится для диагностики: оставлен больший вклад ([kept]), меньший ([dropped]) отброшен.
+     */
+    internal data class CollectionContribConflict(
+        val collection: String,
+        val member: String,
+        val kept: Double,
+        val dropped: Double,
+    )
+
+    fun parseCollections(rows: List<List<Any?>>): List<CollectionData> =
+        parseCollectionsWithWarnings(rows).first
+
+    /**
+     * Разбирает «Сборы» и заодно возвращает расхождения вкладов при слиянии дублей.
+     *
+     * Дубли с одинаковым именем — артефакт сбойной записи, а не отдельные транши:
+     * вклад каждого участника хранится одним числом, поэтому при слиянии берётся
+     * максимум (сложение удвоило бы вклад). Но молчаливое расхождение сумм — признак
+     * потери данных, его нужно залогировать (см. readGroup), а не прятать.
+     */
+    internal fun parseCollectionsWithWarnings(
+        rows: List<List<Any?>>,
+    ): Pair<List<CollectionData>, List<CollectionContribConflict>> {
         // Собираем по имени: дубли с одинаковым именем (артефакты сбойной записи) объединяем,
         // иначе вкладка «Сборы» показывала бы взносы как 0 для записи без данных.
         val byName = LinkedHashMap<String, CollectionData>()
+        val conflicts = mutableListOf<CollectionContribConflict>()
         rows.forEachIndexed { i, row ->
             if (i == 0) return@forEachIndexed
             val name = cellText(row.getOrNull(0))
@@ -452,9 +477,9 @@ fun parseCollections(rows: List<List<Any?>>): List<CollectionData> {
                 sharedWithBudget = cellText(row.getOrNull(5)) != "нет",
             )
             val prev = byName[name]
-            byName[name] = if (prev == null) c else mergeCollectionData(prev, c)
+            byName[name] = if (prev == null) c else mergeCollectionData(prev, c, conflicts)
         }
-        return byName.values.toList()
+        return byName.values.toList() to conflicts
     }
 
     /**
@@ -463,13 +488,30 @@ fun parseCollections(rows: List<List<Any?>>): List<CollectionData> {
      * Взнос каждого участника хранится ОДНИМ числом (см. applyContribution), поэтому
      * строки с одинаковым именем — это снимки одной и той же записи (артефакт сбойной
      * записи), а не отдельные транши. Поэтому берём максимум, а не сумму: сложение
-     * удвоило бы вклад при дублировании строки.
+     * удвоило бы вклад при дублировании строки. Расхождение сумм фиксируем в [conflicts]:
+     * молчаливая потеря меньшего значения — признак сбойной записи, который нужно видеть.
      */
-    private fun mergeCollectionData(a: CollectionData, b: CollectionData): CollectionData {
+    private fun mergeCollectionData(
+        a: CollectionData,
+        b: CollectionData,
+        conflicts: MutableList<CollectionContribConflict>,
+    ): CollectionData {
         val contrib = a.contrib.toMutableMap()
         b.contrib.forEach { (k, v) ->
             val prev = contrib[k]
-            contrib[k] = if (prev == null) v else maxOf(prev, v)
+            if (prev == null) {
+                contrib[k] = v
+            } else {
+                if (kotlin.math.abs(prev - v) >= 0.01) {
+                    conflicts += CollectionContribConflict(
+                        collection = a.name,
+                        member = k,
+                        kept = maxOf(prev, v),
+                        dropped = minOf(prev, v),
+                    )
+                }
+                contrib[k] = maxOf(prev, v)
+            }
         }
         return CollectionData(
             name = a.name,

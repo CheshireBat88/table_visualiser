@@ -150,6 +150,35 @@ class SheetsModelTest {
     }
 
     @Test
+    fun `parseCollections расхождение вкладов дублей фиксируется для лога`() {
+        val rows = listOf(
+            listOf<Any?>("Название", "Дата", "Цель", "На кого", "Взносы", "В общий бюджет"),
+            listOf<Any?>("Подарок", "2026-01-01", 300.0, "A; B", "A=100", "да"),
+            listOf<Any?>("Подарок", "2026-01-05", 300.0, "A; B", "A=150; B=40", "да"),
+        )
+        val (collections, conflicts) = SheetCodec.parseCollectionsWithWarnings(rows)
+        // Поведение слияния не изменилось: остаётся больший вклад, а не сумма.
+        assertEquals(150.0, collections.single().contributed("A"), 0.0)
+        assertEquals(1, conflicts.size)
+        val conflict = conflicts.single()
+        assertEquals("Подарок", conflict.collection)
+        assertEquals("A", conflict.member)
+        assertEquals(150.0, conflict.kept, 0.0)
+        assertEquals(100.0, conflict.dropped, 0.0)
+    }
+
+    @Test
+    fun `parseCollections одинаковые вклады дублей не дают предупреждений`() {
+        val rows = listOf(
+            listOf<Any?>("Название", "Дата", "Цель", "На кого", "Взносы", "В общий бюджет"),
+            listOf<Any?>("Подарок", "2026-01-01", 300.0, "A; B", "A=100", "да"),
+            listOf<Any?>("Подарок", "2026-01-05", 300.0, "A; B", "A=100; B=40", "да"),
+        )
+        val (_, conflicts) = SheetCodec.parseCollectionsWithWarnings(rows)
+        assertTrue(conflicts.isEmpty())
+    }
+
+    @Test
     fun `CollectionData share от цели и количества участников`() {
         val c = CollectionData("X", "2026-01-01", 380.0, (1..13).map { "P$it" }, emptyMap(), true)
         // 380 / 13 = 29.2307… → доля округляется вверх до 29.24.

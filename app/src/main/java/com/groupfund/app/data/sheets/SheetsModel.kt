@@ -5,6 +5,22 @@ import java.time.YearMonth
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+/**
+ * Стандартное окно группы: текущий месяц и следующие 12.
+ * Ограничение защищает раскладку «Сводки» (1 колонка участника + месяцы + 4 итоговых)
+ * от бесконтрольного роста: при большом числе месяцев диапазоны записи/форматирования
+ * выходят за пределы сетки листа.
+ */
+const val MAX_WINDOW_MONTHS = 13
+
+/**
+ * Лимит месяцев для конкретной группы: стандартное окно, но не меньше уже сохранённого
+ * размера. Так старые таблицы с расширенным окном остаются редактируемыми,
+ * но вырасти ещё больше не могут.
+ */
+internal fun monthPlanLimit(existingMonthCount: Int): Int =
+    maxOf(MAX_WINDOW_MONTHS, existingMonthCount)
+
 /** План месяца в окне группы. */
 data class MonthPlan(
     val month: YearMonth,

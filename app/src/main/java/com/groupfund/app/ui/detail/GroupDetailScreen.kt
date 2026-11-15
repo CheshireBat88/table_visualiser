@@ -117,6 +117,7 @@ import com.groupfund.app.data.sheets.PeriodSummary
 import com.groupfund.app.data.sheets.SheetCodec
 import com.groupfund.app.data.sheets.SummaryCalculator
 import com.groupfund.app.data.sheets.money
+import com.groupfund.app.data.sheets.monthPlanLimit
 import com.groupfund.app.data.sheets.round2
 import com.groupfund.app.ui.copyUrl
 import com.groupfund.app.ui.currencySymbol
@@ -3304,6 +3305,9 @@ private fun MonthPlanPanel(
         )
     }
     var planError by remember { mutableStateOf<String?>(null) }
+    // Старое окно могло быть больше стандартного — не мешаем его сохранить,
+    // но не даём вырасти ещё сильнее (см. monthPlanLimit).
+    val monthLimit = monthPlanLimit(group.months.size)
 
     Column(
         modifier = Modifier
@@ -3385,11 +3389,19 @@ private fun MonthPlanPanel(
                 )
                 planError = null
             },
-            enabled = !busy,
+            enabled = !busy && editing.size < monthLimit,
         ) {
             Icon(Icons.Default.Add, "Добавить месяц")
             Spacer(Modifier.width(4.dp))
             Text("Добавить месяц")
+        }
+
+        if (editing.size >= monthLimit) {
+            Text(
+                "В окне группы не может быть больше $monthLimit месяцев.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         planError?.let {
@@ -3409,6 +3421,7 @@ private fun MonthPlanPanel(
                     months.isEmpty() -> planError = "Добавьте хотя бы один месяц"
                     months.none { it.required } -> planError = "Отметьте хотя бы один обязательный месяц"
                     monthLabelsDuplicated(months) -> planError = "Месяцы не должны повторяться"
+                    months.size > monthLimit -> planError = "В окне не может быть больше $monthLimit месяцев"
                     editing.any { it.required && it.amount.isBlank() } -> planError = "Укажите сумму для каждого обязательного месяца"
                     else -> onSave(months)
                 }

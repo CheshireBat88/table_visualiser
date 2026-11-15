@@ -1134,6 +1134,13 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             if (months.isEmpty()) throw IllegalArgumentException("Список месяцев пуст")
             val group = readGroup(sheets, token, spreadsheetId)
             val sorted = months.sortedBy { it.month }
+            if (sorted.map { it.month }.distinct().size != sorted.size) {
+                throw IllegalArgumentException("Месяцы не должны повторяться")
+            }
+            val limit = monthPlanLimit(group.months.size)
+            if (sorted.size > limit) {
+                throw IllegalArgumentException("В окне не может быть больше $limit месяцев")
+            }
             val updated = group.copy(months = sorted)
             val summary = SummaryCalculator.compute(updated)
             writeData(

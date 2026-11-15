@@ -165,8 +165,16 @@ data class SpreadsheetResponse(
 
 // ---------- DTO: запись значений ----------
 
+/**
+ * Режим ввода значений. RAW обязателен: USER_ENTERED заставляет Google Таблицы
+ * интерпретировать строки как формулы/даты/числа — имя вида `=HYPERLINK(...)` или
+ * описание расхода `=IMPORTXML(...)` превратились бы в исполняемую формулу.
+ * RAW пишет ровно то, что передали: формулы в названиях/комментариях безопасны.
+ */
+const val VALUE_INPUT_RAW = "RAW"
+
 data class BatchUpdateValuesRequest(
-    @SerializedName("valueInputOption") val valueInputOption: String = "USER_ENTERED",
+    @SerializedName("valueInputOption") val valueInputOption: String = VALUE_INPUT_RAW,
     @SerializedName("data") val data: List<ValueRange>,
 )
 

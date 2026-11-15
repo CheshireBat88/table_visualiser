@@ -8,6 +8,7 @@ import com.groupfund.app.data.auth.GoogleAuthManager
 import com.groupfund.app.data.auth.OAuthConsentRequiredException
 import com.groupfund.app.data.registry.GroupRegistry
 import com.groupfund.app.data.sheets.GroupDraft
+import com.groupfund.app.data.sheets.MAX_WINDOW_MONTHS
 import com.groupfund.app.data.sheets.MonthPlan
 import com.groupfund.app.data.sheets.SheetsRepository
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,7 +42,7 @@ data class CreateGroupUiState(
     val duplicateTitle: Boolean = false,
 )
 
-val MONTHS_IN_WINDOW = 13
+val MONTHS_IN_WINDOW = MAX_WINDOW_MONTHS
 
 fun defaultWindow(): List<MonthDraft> =
     (0 until MONTHS_IN_WINDOW).map {

@@ -13,8 +13,8 @@ android {
         applicationId = "com.groupfund.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 11
-        versionName = "1.0.11"
+        versionCode = 12
+        versionName = "1.0.12"
     }
 
     buildTypes {

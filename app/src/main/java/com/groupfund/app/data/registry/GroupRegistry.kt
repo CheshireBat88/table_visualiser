@@ -1,6 +1,8 @@
 package com.groupfund.app.data.registry
 
 import android.content.Context
+import android.util.Log
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -75,7 +77,7 @@ class GroupRegistry(private val context: Context) {
         if (account.isBlank()) return
         context.groupDataStore.edit { prefs ->
             val key = groupsKey(account)
-            val current = prefs[key]?.let(::deserialize) ?: emptyList()
+            val current = readGroups(prefs, key) ?: emptyList()
             if (current.any { it.spreadsheetId == entry.spreadsheetId }) return@edit
             prefs[key] = serialize(current + entry)
         }
@@ -85,7 +87,7 @@ class GroupRegistry(private val context: Context) {
         if (account.isBlank()) return
         context.groupDataStore.edit { prefs ->
             val key = groupsKey(account)
-            val current = prefs[key]?.let(::deserialize) ?: return@edit
+            val current = readGroups(prefs, key) ?: return@edit
             prefs[key] = serialize(current.filterNot { it.id == id })
         }
     }
@@ -101,7 +103,7 @@ class GroupRegistry(private val context: Context) {
         if (account.isBlank()) return
         context.groupDataStore.edit { prefs ->
             val key = groupsKey(account)
-            val current = prefs[key]?.let(::deserialize) ?: return@edit
+            val current = readGroups(prefs, key) ?: return@edit
             prefs[key] = serialize(
                 current.map { entry ->
                     if (entry.id == id) entry.copy(localTitle = newTitle.trim().takeIf { it.isNotBlank() })
@@ -120,7 +122,7 @@ class GroupRegistry(private val context: Context) {
         if (account.isBlank()) return
         context.groupDataStore.edit { prefs ->
             val key = groupsKey(account)
-            val current = prefs[key]?.let(::deserialize) ?: return@edit
+            val current = readGroups(prefs, key) ?: return@edit
             prefs[key] = serialize(
                 current.map { entry ->
                     if (entry.id == id) {
@@ -137,7 +139,7 @@ class GroupRegistry(private val context: Context) {
         if (account.isBlank()) return
         context.groupDataStore.edit { prefs ->
             val key = groupsKey(account)
-            val current = prefs[key]?.let(::deserialize) ?: return@edit
+            val current = readGroups(prefs, key) ?: return@edit
             prefs[key] = serialize(
                 current.map { entry -> if (entry.id == id) entry.copy(unavailable = unavailable) else entry },
             )
@@ -149,7 +151,7 @@ class GroupRegistry(private val context: Context) {
         if (account.isBlank()) return
         context.groupDataStore.edit { prefs ->
             val key = groupsKey(account)
-            val current = prefs[key]?.let(::deserialize) ?: return@edit
+            val current = readGroups(prefs, key) ?: return@edit
             prefs[key] = serialize(
                 current.map { entry -> if (entry.id == id) entry.copy(summaryStyled = styled) else entry },
             )
@@ -164,7 +166,7 @@ class GroupRegistry(private val context: Context) {
         if (account.isBlank()) return
         context.groupDataStore.edit { prefs ->
             val key = groupsKey(account)
-            val current = prefs[key]?.let(::deserialize) ?: return@edit
+            val current = readGroups(prefs, key) ?: return@edit
             prefs[key] = serialize(
                 current.map { entry ->
                     if (entry.spreadsheetId == oldSpreadsheetId) transform(entry) else entry
@@ -233,11 +235,34 @@ class GroupRegistry(private val context: Context) {
 
     private fun serialize(list: List<GroupEntry>): String = gson.toJson(list)
 
+    /**
+     * Читает список групп из DataStore для изменяющей операции. Если JSON повреждён,
+     * сохраняет исходную строку в резервный ключ и возвращает пустой список: следующая
+     * запись не уничтожит данные безвозвратно (P2.36).
+     */
+    private fun readGroups(
+        prefs: MutablePreferences,
+        key: Preferences.Key<String>,
+    ): List<GroupEntry>? {
+        val raw = prefs[key] ?: return null
+        deserializeOrNull(raw)?.let { return it }
+        val backupKey = stringPreferencesKey("${key.name}_corrupt_backup")
+        if (prefs[backupKey].isNullOrBlank()) prefs[backupKey] = raw
+        Log.e("GroupRegistry", "Corrupt groups JSON in ${key.name}; original preserved in ${backupKey.name}")
+        return emptyList()
+    }
+
     private fun deserialize(raw: String): List<GroupEntry> =
+        deserializeOrNull(raw) ?: run {
+            Log.e("GroupRegistry", "Corrupt groups JSON; keeping original for recovery")
+            emptyList()
+        }
+
+    private fun deserializeOrNull(raw: String): List<GroupEntry>? =
         try {
             val type = object : TypeToken<List<GroupEntry>>() {}.type
             gson.fromJson<List<GroupEntry>>(raw, type) ?: emptyList()
         } catch (e: Exception) {
-            emptyList()
+            null
         }
 }

@@ -245,6 +245,8 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     /** Создаёт «книгу» группы со всеми листами, правами на просмотр по ссылке. */
     suspend fun createGroup(draft: GroupDraft): Result<GroupEntry> = withToken(retryOn429 = false) { sheets, drive, token ->
         val authHeader = "Bearer $token"
+        // Проверяем имена до создания таблицы: иначе на Drive останется осиротевший файл.
+        draft.members.forEach { name -> memberNameError(name)?.let { error(it) } }
 
         val response = sheets.createSpreadsheet(
             authHeader,
@@ -592,7 +594,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             val page = drive.listFiles(
                 authHeader,
                 query = "mimeType='application/vnd.google-apps.spreadsheet' and trashed=false",
-                fields = "nextPageToken,files(id,name,webViewLink,createdTime,appProperties)",
+                fields = "nextPageToken,files(id,name,webViewLink,createdTime,appProperties,ownedByMe)",
                 pageSize = 100,
                 pageToken = pageToken,
             )
@@ -613,7 +615,10 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                         title = file.name ?: "Группа",
                         spreadsheetId = id,
                         spreadsheetUrl = file.webViewLink ?: "",
-                        role = "creator",
+                        // Владелец таблицы — создатель; остальные найденные таблицы
+                        // доступны только на просмотр (P1.17). Ошибка прав понизит
+                        // роль до observer, но формы правки не должны появляться заранее.
+                        role = if (file.ownedByMe == true) "creator" else "observer",
                         createdAtEpochMillis = parseDriveTime(file.createdTime),
                     )
                 }
@@ -724,16 +729,17 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         sharedWithBudget: Boolean = true,
     ): Result<GroupData> = withToken { sheets, _, token ->
         val authHeader = "Bearer $token"
-        if (name.isBlank()) error("Укажите название сбора")
+        val normalizedName = name.trim()
+        if (normalizedName.isEmpty()) error("Укажите название сбора")
         if (target <= 0) error("Укажите сумму сбора")
         if (participants.isEmpty()) error("Выберите участников")
         val group = readGroup(sheets, token, spreadsheetId)
-        if (group.collections.any { it.name == name }) error("Сбор с таким названием уже есть")
+        if (group.collections.any { it.name.trim() == normalizedName }) error("Сбор с таким названием уже есть")
         ensureCollectionsTab(sheets, authHeader, spreadsheetId)
         val updated = group.copy(
             collections = group.collections +
                 CollectionData(
-                    name = name,
+                    name = normalizedName,
                     date = SheetCodec.today(),
                     target = round2(target),
                     participants = participants.distinct(),
@@ -958,9 +964,10 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val group = readGroup(sheets, token, spreadsheetId)
         val collection = group.collections.firstOrNull { it.name == name }
             ?: error("Сбор не найден")
-        if (name != normalizedName && group.collections.any { it.name == normalizedName }) {
+        if (group.collections.any { it.name != name && it.name.trim() == normalizedName }) {
             error("Сбор с таким названием уже есть")
         }
+        collectionParticipantRemovalError(collection, participants)?.let { error(it) }
         val updatedColl = collection.copy(
             name = normalizedName,
             target = round2(target),
@@ -1073,31 +1080,33 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val authHeader = "Bearer $token"
         val group = readGroup(sheets, token, spreadsheetId)
         if (group.members.none { it.name == oldName }) error("Участник не найден")
-        if (updated.name.isBlank()) error("Имя не может быть пустым")
+        val normalizedName = updated.name.trim()
+        memberNameError(normalizedName)?.let { error(it) }
         if (
-            updated.name != oldName &&
-            group.members.any { it.name.equals(updated.name, ignoreCase = true) }
+            normalizedName != oldName &&
+            group.members.any { it.name.equals(normalizedName, ignoreCase = true) }
         ) {
-            error("Участник с именем «${updated.name}» уже есть")
+            error("Участник с именем «$normalizedName» уже есть")
         }
+        val member = updated.copy(name = normalizedName)
 
-        val renamed = updated.name != oldName
-        val newMembers = group.members.map { if (it.name == oldName) updated else it }
+        val renamed = normalizedName != oldName
+        val newMembers = group.members.map { if (it.name == oldName) member else it }
         val newPayments = if (renamed) {
-            group.payments.map { if (it.member == oldName) it.copy(member = updated.name) else it }
+            group.payments.map { if (it.member == oldName) it.copy(member = normalizedName) else it }
         } else group.payments
         val newExpenses = if (renamed) {
             group.expenses.map { e ->
                 if (oldName in e.participants) {
-                    e.copy(participants = e.participants.map { if (it == oldName) updated.name else it })
+                    e.copy(participants = e.participants.map { if (it == oldName) normalizedName else it })
                 } else e
             }
         } else group.expenses
         val newCollections = if (renamed) {
             group.collections.map { c ->
-                val participants = c.participants.map { if (it == oldName) updated.name else it }
+                val participants = c.participants.map { if (it == oldName) normalizedName else it }
                 val contrib = c.contrib.entries.associate { (k, v) ->
-                    (if (k == oldName) updated.name else k) to v
+                    (if (k == oldName) normalizedName else k) to v
                 }
                 c.copy(participants = participants, contrib = contrib)
             }
@@ -1174,7 +1183,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         withToken { sheets, _, token ->
             val authHeader = "Bearer $token"
             val normalized = name.trim()
-            if (normalized.isEmpty()) throw IllegalArgumentException("Укажите имя участника")
+            memberNameError(normalized)?.let { throw IllegalArgumentException(it) }
             val group = readGroup(sheets, token, spreadsheetId)
             if (group.members.any { it.name.equals(normalized, ignoreCase = true) }) {
                 throw IllegalArgumentException("Участник с именем «$normalized» уже есть")

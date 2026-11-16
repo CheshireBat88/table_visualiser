@@ -11,6 +11,7 @@ import com.groupfund.app.data.sheets.GroupDraft
 import com.groupfund.app.data.sheets.MAX_WINDOW_MONTHS
 import com.groupfund.app.data.sheets.MonthPlan
 import com.groupfund.app.data.sheets.SheetsRepository
+import com.groupfund.app.data.sheets.memberNameError
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -103,16 +104,21 @@ class CreateGroupViewModel(app: Application) : AndroidViewModel(app) {
     fun addMember() {
         val st = _uiState.value
         val name = st.memberInput.trim()
-        if (name.isNotEmpty() && name !in st.members) {
-            val bday = st.memberBirthdayMillis?.let(::fullDateString) ?: ""
-            _uiState.update {
-                it.copy(
-                    members = it.members + name,
-                    memberBirthdays = if (bday.isNotEmpty()) it.memberBirthdays + (name to bday) else it.memberBirthdays,
-                    memberInput = "",
-                    memberBirthdayMillis = null,
-                )
-            }
+        if (name.isEmpty()) return
+        memberNameError(name)?.let { message ->
+            _uiState.update { it.copy(error = message) }
+            return
+        }
+        if (name in st.members) return
+        val bday = st.memberBirthdayMillis?.let(::fullDateString) ?: ""
+        _uiState.update {
+            it.copy(
+                members = it.members + name,
+                memberBirthdays = if (bday.isNotEmpty()) it.memberBirthdays + (name to bday) else it.memberBirthdays,
+                memberInput = "",
+                memberBirthdayMillis = null,
+                error = null,
+            )
         }
     }
 

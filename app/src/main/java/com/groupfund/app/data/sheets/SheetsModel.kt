@@ -210,6 +210,54 @@ internal fun cellNum(v: Any?): Double = when (v) {
     }
 }
 
+/** Символы, которые ломают списки имён в листах «На кого» и «Участники». */
+private const val NAME_SEPARATORS = ";=\n\r"
+
+/**
+ * Проверка имени участника перед записью в таблицу. Имена разделяются `;`, а взносы
+ * сбора кодируются как `имя=сумма`; поэтому такие символы в имени сломали бы разбор
+ * (P1.13). Возвращает текст ошибки или null, если имя допустимо.
+ */
+internal fun memberNameError(name: String): String? = when {
+    name.isBlank() -> "Укажите имя участника"
+    name.any { it in NAME_SEPARATORS } ->
+        "Имя не должно содержать «;», «=» или перевод строки: эти символы разделяют списки в таблице"
+    else -> null
+}
+
+/**
+ * Терпимый разбор «да/нет» из ячеек: регистр и лишние пробелы не важны.
+ * Неизвестное значение даёт [default] — так старые таблицы не теряют флаги.
+ */
+internal fun parseYesNo(v: Any?, default: Boolean = false): Boolean {
+    val text = cellText(v).trim().lowercase(Locale.ROOT)
+    if (text.isEmpty()) return default
+    return when (text) {
+        "да", "yes", "y", "true", "1", "✓", "+" -> true
+        "нет", "no", "n", "false", "0", "—", "-" -> false
+        else -> default
+    }
+}
+
+/**
+ * Проверка перед сохранением сбора: нельзя молча стереть уже внесённые деньги,
+ * убрав участника из списка (P0.9). Возвращает текст ошибки или null.
+ */
+internal fun collectionParticipantRemovalError(
+    collection: CollectionData,
+    participants: List<String>,
+): String? {
+    val removedWithMoney = collection.participants
+        .filter { it !in participants }
+        .filter { collection.contributed(it) >= 0.01 }
+    return if (removedWithMoney.isEmpty()) {
+        null
+    } else {
+        "Сначала снимите отметку «сдал» у участников с внесёнными деньгами: " +
+            removedWithMoney.joinToString(", ")
+    }
+}
+
 /** Кодирование/декодирование листов таблицы. */
 object SheetCodec {
 
@@ -275,7 +323,7 @@ object SheetCodec {
                     null
                 }
                 if (month != null) {
-                    val required = cellText(row.getOrNull(1)) == YES
+                    val required = parseYesNo(row.getOrNull(1), default = false)
                     val amount = if (required) cellNum(row.getOrNull(2)).toInt() else 0
                     months.add(MonthPlan(month, required, amount))
                 }
@@ -327,7 +375,7 @@ object SheetCodec {
                     name = name,
                     email = cellText(row.getOrNull(1)),
                     joinDate = cellText(row.getOrNull(2)),
-                    active = status.isEmpty() || status == ACTIVE,
+                    active = status.isEmpty() || status.equals(ACTIVE, ignoreCase = true),
                     removedAt = cellText(row.getOrNull(4)).ifEmpty { null },
                     refund = cellText(row.getOrNull(5)).toDoubleOrNull(),
                     birthday = cellText(row.getOrNull(6)),
@@ -490,7 +538,7 @@ object SheetCodec {
                 target = target,
                 participants = participants,
                 contrib = contrib,
-                sharedWithBudget = cellText(row.getOrNull(5)) != "нет",
+                sharedWithBudget = parseYesNo(row.getOrNull(5), default = true),
             )
             val prev = byName[name]
             byName[name] = if (prev == null) c else mergeCollectionData(prev, c, conflicts)

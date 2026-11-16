@@ -214,6 +214,27 @@ internal fun cellNum(v: Any?): Double = when (v) {
 private const val NAME_SEPARATORS = ";=\n\r"
 
 /**
+ * Разбирает дату из ячейки таблицы. Приложение пишет ISO (`2026-01-31`), но лист
+ * может быть отредактирован вручную: поддерживаем `31.01.2026`, `31/01/2026`,
+ * `31-01-2026` и числовой серийный номер Google Sheets.
+ */
+internal fun parseSheetDate(raw: String): LocalDate? {
+    val s = raw.trim()
+    if (s.isEmpty()) return null
+    runCatching { LocalDate.parse(s) }.getOrNull()?.let { return it }
+    s.toDoubleOrNull()?.let { parseSheetSerialDate(it)?.let { d -> return d } }
+    val dotted = Regex("""^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$""").find(s) ?: return null
+    val (day, month, year) = dotted.destructured
+    return runCatching { LocalDate.of(year.toInt(), month.toInt(), day.toInt()) }.getOrNull()
+}
+
+/** Числовой серийный номер Google Sheets → дата (эпоха 30.12.1899). */
+internal fun parseSheetSerialDate(value: Double): LocalDate? {
+    if (value < 20_000 || value > 100_000) return null
+    return runCatching { LocalDate.of(1899, 12, 30).plusDays(value.toLong()) }.getOrNull()
+}
+
+/**
  * Проверка имени участника перед записью в таблицу. Имена разделяются `;`, а взносы
  * сбора кодируются как `имя=сумма`; поэтому такие символы в имени сломали бы разбор
  * (P1.13). Возвращает текст ошибки или null, если имя допустимо.
@@ -382,7 +403,7 @@ object SheetCodec {
                     offMonths = cellText(row.getOrNull(7))
                         .split(';')
                         .map { it.trim() }
-                        .filter { it.isNotEmpty() },
+                        .filter { label -> label.isNotEmpty() && runCatching { MonthPlan.of(label) }.isSuccess },
                 ),
             )
         }

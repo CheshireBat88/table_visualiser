@@ -60,6 +60,17 @@ class SummaryCalculatorTest {
     }
 
     @Test
+    fun dottedJoinDateStartsChargingFromThatMonth() {
+        val late = member("A", join = "01.02.2026")
+        val g = group(
+            members = listOf(late),
+            payments = listOf(pay("A", 200.0)),
+        )
+        val a = SummaryCalculator.compute(g).rows.first { it.member.name == "A" }
+        assertEquals(listOf(0.0, 100.0, 100.0), a.perMonth)
+    }
+
+    @Test
     fun refundSubtractedFromPaid() {
         val g = group(payments = listOf(pay("A", 300.0), pay("A", 50.0, "Возврат: A")))
         val s = SummaryCalculator.compute(g)
@@ -234,5 +245,26 @@ class SummaryCalculatorTest {
         val rows = SummaryCalculator.summaryRows(g, s)
         val excRow = rows.lastOrNull { it.getOrNull(0) == "A" }
         assertEquals(listOf<Any?>("A", "100", "50", "50"), excRow)
+    }
+
+    @Test
+    fun excludedSectionMatchesActiveFormulaForCollections() {
+        val exc = member("A").copy(active = false, removedAt = "2026-02-01", refund = 90.0)
+        val g = group(
+            members = listOf(member("B"), exc),
+            payments = listOf(
+                pay("A", 100.0),
+                PaymentData("A", "2026-01-01", 50.0, "Сбор: Общий"),
+                PaymentData("A", "2026-01-01", 70.0, "Сбор: Отдельный"),
+                PaymentData("A", "2026-01-02", 10.0, "Возврат: частичный"),
+            ),
+            collections = listOf(
+                CollectionData("Общий", "2026-01-01", 100.0, listOf("A", "B"), sharedWithBudget = true),
+                CollectionData("Отдельный", "2026-01-01", 140.0, listOf("A", "B"), sharedWithBudget = false),
+            ),
+        )
+        val s = SummaryCalculator.compute(g)
+        val excRow = SummaryCalculator.summaryRows(g, s).lastOrNull { it.getOrNull(0) == "A" }
+        assertEquals(listOf<Any?>("A", "140", "50", "90"), excRow)
     }
 }

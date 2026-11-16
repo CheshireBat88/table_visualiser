@@ -89,6 +89,27 @@ class InputValidationTest {
     }
 
     @Test
+    fun `parseSheetDate понимает ISO, точки, слэши и серийный номер`() {
+        val expected = java.time.LocalDate.of(2026, 1, 31)
+        assertEquals(expected, parseSheetDate("2026-01-31"))
+        assertEquals(expected, parseSheetDate("31.01.2026"))
+        assertEquals(expected, parseSheetDate("31/01/2026"))
+        assertEquals(expected, parseSheetDate("31-01-2026"))
+        assertEquals(expected, parseSheetDate("46053"))
+        assertNull(parseSheetDate("не дата"))
+        assertNull(parseSheetDate("2026-13-01"))
+    }
+
+    @Test
+    fun `parseMembers отбрасывает некорректные метки без взноса`() {
+        val rows = listOf(
+            listOf<Any?>("Имя", "Email", "Дата вступления", "Статус", "Дата удаления", "Возврат", "День рождения", "Без взноса"),
+            listOf<Any?>("A", "", "2026-01-01", "Активен", "", "", "", "2026-02; мусор; 2026-13"),
+        )
+        assertEquals(listOf("2026-02"), SheetCodec.parseMembers(rows).first().offMonths)
+    }
+
+    @Test
     fun `нельзя убрать из сбора участника с внесёнными деньгами`() {
         val collection = CollectionData(
             name = "Подарок",

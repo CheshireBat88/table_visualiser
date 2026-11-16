@@ -1,6 +1,5 @@
 package com.groupfund.app.data.sheets
 
-import java.time.LocalDate
 import java.time.YearMonth
 
 /** Итог по одному участнику. */
@@ -161,8 +160,7 @@ object SummaryCalculator {
      * если вступление позже всех месяцев окна — месяцев.size (обязанностей в окне нет).
      */
     private fun computeStartIndex(months: List<MonthPlan>, joinDate: String): Int {
-        val join = runCatching { YearMonth.from(LocalDate.parse(joinDate)) }.getOrNull()
-            ?: return 0
+        val join = parseSheetDate(joinDate)?.let { YearMonth.from(it) } ?: return 0
         val idx = months.indexOfFirst { it.required && !it.month.isBefore(join) }
         return if (idx < 0) months.size else idx
     }
@@ -242,15 +240,25 @@ object SummaryCalculator {
         val removed = group.members.filter { !it.active }
         if (removed.isEmpty()) return emptyList()
         val expenseShares = fairExpenseShares(group.expenses, group.members.map { it.name })
+        // Доли общих сборов входят в «расходы» так же, как у активных участников;
+        // взносы в отдельные сборы — не бюджетные деньги и в «внесено» не считаются.
+        val collectionShares = fairCollectionShares(group.collections, group.members.map { it.name })
+        val standaloneTags = group.collections
+            .filter { !it.sharedWithBudget }
+            .map { "$COLLECTION_TAG_PREFIX${it.name}" }
+            .toSet()
         val paid = group.payments
             .groupBy { it.member }
             .mapValues { (_, ps) ->
-                ps.filterNot { it.comment.startsWith(REFUND_TAG_PREFIX) }.sumOf { it.amount } -
-                    ps.filter { it.comment.startsWith(REFUND_TAG_PREFIX) }.sumOf { it.amount }
+                ps.filterNot { it.comment in standaloneTags }.sumOf {
+                    if (it.comment.startsWith(REFUND_TAG_PREFIX)) -it.amount else it.amount
+                }
             }
         return removed.map { m ->
             val totalPaid = round2(paid[m.name] ?: 0.0)
-            val expenseShare = round2(expenseShares[m.name] ?: 0.0)
+            val expenseShare = round2(
+                (expenseShares[m.name] ?: 0.0) + (collectionShares[m.name] ?: 0.0),
+            )
             listOf<Any?>(
                 m.name,
                 money(totalPaid),

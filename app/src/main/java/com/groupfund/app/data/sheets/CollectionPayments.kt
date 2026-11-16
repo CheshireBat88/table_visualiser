@@ -320,3 +320,66 @@ internal fun applyContribution(
     }
     return newCollections to newPayments
 }
+
+/** Что делать с деньгами участника, которого убирают из сбора. */
+enum class RemovedContributionAction {
+    /** Деньги возвращаются участнику: платежи сбора удаляются из бюджета. */
+    REFUND,
+
+    /** Взнос остаётся в бюджете как обычный месячный платёж. */
+    MONTHLY,
+}
+
+/** Служебные комментарии, привязанные к сбору (старое и новое имя при переименовании). */
+internal fun collectionTagComments(oldName: String, newName: String): Set<String> = setOf(
+    "${SummaryCalculator.COLLECTION_TAG_PREFIX}$oldName",
+    "${SummaryCalculator.COLLECTION_REFUND_TAG_PREFIX}$oldName",
+    "${SummaryCalculator.COLLECTION_TAG_PREFIX}$newName",
+    "${SummaryCalculator.COLLECTION_REFUND_TAG_PREFIX}$newName",
+)
+
+/**
+ * Применяет решение по деньгам участников, убранных из сбора.
+ *
+ * [basePayments] — платежи после обычной пересборки сбора. У вышедших участников
+ * в них могли остаться только «Возврат из сбора: …» (излишек сверх доли).
+ * - [RemovedContributionAction.REFUND] — убираем и их: деньги возвращены, в бюджете
+ *   их больше нет;
+ * - [RemovedContributionAction.MONTHLY] — заменяем все строки сбора одной обычной
+ *   строкой на всю фактически внесённую сумму: деньги остаются в бюджете;
+ * - null — ничего не меняем (для сбора без вышедших участников с деньгами).
+ */
+internal fun settleRemovedCollectionContributions(
+    basePayments: List<PaymentData>,
+    sourcePayments: List<PaymentData>,
+    collection: CollectionData,
+    participants: List<String>,
+    oldName: String,
+    newName: String,
+    action: RemovedContributionAction?,
+): List<PaymentData> {
+    if (action == null) return basePayments
+    val removed = collection.participants.filter { it !in participants }.toSet()
+    if (removed.isEmpty()) return basePayments
+
+    val tags = collectionTagComments(oldName, newName)
+    val cleaned = basePayments.filterNot { it.member in removed && it.comment in tags }
+    if (action == RemovedContributionAction.REFUND) return cleaned
+
+    val converted = removed.sorted().mapNotNull { name ->
+        val recorded = round2(sourcePayments.filter { it.member == name && it.comment in tags }.sumOf { it.amount })
+        // Если строки в таблице потерялись, но вклад учтён, переносим сам вклад.
+        val amount = maxOf(recorded, round2(collection.contributed(name)))
+        if (amount < 0.01) {
+            null
+        } else {
+            PaymentData(
+                name,
+                collection.date,
+                amount,
+                "${SummaryCalculator.COLLECTION_TRANSFER_TAG_PREFIX}${collection.name}",
+            )
+        }
+    }
+    return cleaned + converted
+}

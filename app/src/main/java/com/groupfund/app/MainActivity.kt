@@ -25,12 +25,14 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.groupfund.app.data.parseInviteTarget
 import com.groupfund.app.notifications.BirthdayCheck
 import com.groupfund.app.notifications.BirthdayNotifier
 import com.groupfund.app.ui.MainScreen
 import com.groupfund.app.ui.MainViewModel
 import com.groupfund.app.ui.create.CreateGroupScreen
 import com.groupfund.app.ui.detail.GroupDetailScreen
+import com.groupfund.app.ui.scan.QrScannerScreen
 import com.groupfund.app.ui.theme.GroupFundTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -169,7 +171,24 @@ private fun AppNav(
             MainScreen(
                 onCreateGroup = { nav.navigate("create") },
                 onOpenGroup = { id -> nav.navigate("group/$id") },
+                onScanQr = { nav.navigate("scan") },
                 viewModel = mainVm,
+            )
+        }
+
+        composable("scan") {
+            QrScannerScreen(
+                onBack = { nav.popBackStack() },
+                onScanned = { raw ->
+                    val id = parseInviteTarget(raw)
+                    if (id == null) {
+                        false
+                    } else {
+                        mainVm.setPendingInvite(id)
+                        nav.popBackStack()
+                        true
+                    }
+                },
             )
         }
 

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -91,6 +92,7 @@ private fun withUniqueLabels(groups: List<GroupEntry>): List<DisplayGroup> {
 fun MainScreen(
     onCreateGroup: () -> Unit,
     onOpenGroup: (String) -> Unit,
+    onScanQr: () -> Unit,
     viewModel: MainViewModel = viewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -194,6 +196,9 @@ fun MainScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.app_name)) },
                 actions = {
+                    IconButton(onClick = onScanQr) {
+                        Icon(Icons.Default.QrCodeScanner, "Сканировать QR-приглашение")
+                    }
                     if (state.isSignedIn) {
                         IconButton(
                             onClick = {

@@ -13,8 +13,8 @@ android {
         applicationId = "com.groupfund.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 14
-        versionName = "1.0.14"
+        versionCode = 15
+        versionName = "1.0.15"
     }
 
     buildTypes {
@@ -54,6 +54,10 @@ dependencies {
     implementation(libs.okhttp.logging)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
     implementation("com.google.zxing:core:3.5.3")
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)

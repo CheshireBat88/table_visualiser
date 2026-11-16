@@ -21,6 +21,7 @@ import com.groupfund.app.data.sheets.PermissionDeniedException
 import com.groupfund.app.data.sheets.SheetsRepository
 import com.groupfund.app.data.sheets.SummaryCalculator
 import com.groupfund.app.data.sheets.isCollectionPayment
+import com.groupfund.app.data.sheets.memberNameError
 import com.groupfund.app.data.sheets.money
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -333,6 +334,10 @@ class GroupDetailViewModel(
             _uiState.update { st -> st.copy(error = "Имя не может быть пустым") }
             return
         }
+        memberNameError(normalized)?.let { message ->
+            _uiState.update { st -> st.copy(error = message) }
+            return
+        }
         if (normalized != oldName && group.members.any { it.name.equals(normalized, ignoreCase = true) }) {
             _uiState.update { st -> st.copy(error = "Участник с именем «$normalized» уже есть") }
             return
@@ -364,6 +369,10 @@ class GroupDetailViewModel(
         val normalized = name.trim()
         if (normalized.isBlank()) {
             _uiState.update { st -> st.copy(error = "Укажите имя участника") }
+            return
+        }
+        memberNameError(normalized)?.let { message ->
+            _uiState.update { st -> st.copy(error = message) }
             return
         }
         if (group.members.any { it.name.equals(normalized, ignoreCase = true) }) {

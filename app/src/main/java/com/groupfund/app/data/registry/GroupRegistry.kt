@@ -92,8 +92,8 @@ class GroupRegistry(private val context: Context) {
         }
     }
 
-    suspend fun groupById(account: String, id: String): GroupEntry =
-        groupsFor(account).first { it.id == id }
+    suspend fun groupById(account: String, id: String): GroupEntry? =
+        groupsFor(account).firstOrNull { it.id == id }
 
     suspend fun findBySpreadsheetId(account: String, spreadsheetId: String): GroupEntry? =
         groupsFor(account).firstOrNull { it.spreadsheetId == spreadsheetId }

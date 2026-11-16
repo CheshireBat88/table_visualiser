@@ -72,6 +72,13 @@ class GroupDetailViewModel(
         viewModelScope.launch {
             val account = auth.storedEmail() ?: return@launch
             entry = registry.groupById(account, groupId)
+            if (entry == null) {
+                // Устаревшая ссылка/удалённая запись: не падаем и не оставляем вечный спиннер.
+                _uiState.update {
+                    it.copy(loading = false, error = "Группа не найдена в локальном списке")
+                }
+                return@launch
+            }
             _uiState.update {
                 it.copy(
                     title = entry?.localTitle ?: entry?.title,

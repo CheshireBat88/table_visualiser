@@ -49,6 +49,9 @@ object SummaryCalculator {
     /** Префикс комментария платежей, переведённых из удалённого сбора в обычные взносы. */
     const val CANCELLED_COLLECTION_TAG_PREFIX = "Отмененный сбор: "
 
+    /** Префикс комментария взноса, перенесённого из сбора после выхода участника. */
+    const val COLLECTION_TRANSFER_TAG_PREFIX = "Перенос из сбора: "
+
     /** Считывает полную сводку из данных группы. */
     fun compute(group: GroupData): GroupSummary {
         val months = group.months

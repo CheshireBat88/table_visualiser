@@ -18,6 +18,7 @@ import com.groupfund.app.data.sheets.MemberData
 import com.groupfund.app.data.sheets.NotFoundException
 import com.groupfund.app.data.sheets.PaymentInput
 import com.groupfund.app.data.sheets.PermissionDeniedException
+import com.groupfund.app.data.sheets.RemovedContributionAction
 import com.groupfund.app.data.sheets.SheetsRepository
 import com.groupfund.app.data.sheets.SummaryCalculator
 import com.groupfund.app.data.sheets.isCollectionPayment
@@ -434,9 +435,18 @@ class GroupDetailViewModel(
     }
 
     /** Редактирует сбор: новый состав, сумма и/или название. */
-    fun editCollection(name: String, newName: String, target: Double, participants: List<String>, sharedWithBudget: Boolean = true) {
+    fun editCollection(
+        name: String,
+        newName: String,
+        target: Double,
+        participants: List<String>,
+        sharedWithBudget: Boolean = true,
+        removedContributionAction: RemovedContributionAction? = null,
+    ) {
         if (_uiState.value.busy || newName.isBlank() || target <= 0 || participants.isEmpty()) return
-        lastAction = { doEditCollection(name, newName, target, participants, sharedWithBudget) }
+        lastAction = {
+            doEditCollection(name, newName, target, participants, sharedWithBudget, removedContributionAction)
+        }
         runLast()
     }
 
@@ -820,9 +830,18 @@ class GroupDetailViewModel(
         target: Double,
         participants: List<String>,
         sharedWithBudget: Boolean,
+        removedContributionAction: RemovedContributionAction?,
     ) {
         val entry = entry ?: return
-        val result = repository.editCollection(entry.spreadsheetId, name, newName, target, participants, sharedWithBudget)
+        val result = repository.editCollection(
+            entry.spreadsheetId,
+            name,
+            newName,
+            target,
+            participants,
+            sharedWithBudget,
+            removedContributionAction,
+        )
         _uiState.update { st ->
             result.fold(
                 onSuccess = { g ->

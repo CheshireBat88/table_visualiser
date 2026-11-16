@@ -121,6 +121,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun setPendingInvite(spreadsheetId: String?) {
         if (spreadsheetId.isNullOrBlank()) return
         pendingInviteId = spreadsheetId
+        if (auth.storedEmail() == null) {
+            _uiState.update {
+                it.copy(error = "Приглашение сохранено. Войдите в Google, чтобы присоединиться к группе")
+            }
+            return
+        }
         processPendingInvite()
     }
 

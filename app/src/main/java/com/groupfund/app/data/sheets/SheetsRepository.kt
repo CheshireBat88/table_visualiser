@@ -947,6 +947,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      * Редактирует сбор: участники и/или сумма. Изменение цели пересчитывает долю:
      * при уменьшении избыток уже внесённого автоматически уходит в месячную оплату
      * (платёж «Возврат из сбора»), при увеличении — виден недобор.
+     *
+     * Если из сбора убирают участника с внесёнными деньгами, [removedContributionAction]
+     * обязательно задаёт их судьбу: вернуть участнику или перевести в месячные платежи.
      */
     suspend fun editCollection(
         spreadsheetId: String,
@@ -955,28 +958,42 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         target: Double,
         participants: List<String>,
         sharedWithBudget: Boolean = true,
+        removedContributionAction: RemovedContributionAction? = null,
     ): Result<GroupData> = withToken { sheets, _, token ->
         val authHeader = "Bearer $token"
         val normalizedName = newName.trim()
         if (normalizedName.isEmpty()) error("Укажите название сбора")
         if (target <= 0) error("Укажите сумму сбора")
         if (participants.isEmpty()) error("Выберите участников")
+        val newParticipants = participants.distinct()
         val group = readGroup(sheets, token, spreadsheetId)
         val collection = group.collections.firstOrNull { it.name == name }
             ?: error("Сбор не найден")
         if (group.collections.any { it.name != name && it.name.trim() == normalizedName }) {
             error("Сбор с таким названием уже есть")
         }
-        collectionParticipantRemovalError(collection, participants)?.let { error(it) }
+        val removedWithMoney = removedCollectionContributors(collection, newParticipants)
+        if (removedWithMoney.isNotEmpty() && removedContributionAction == null) {
+            error(collectionParticipantRemovalError(collection, newParticipants) ?: "Выберите судьбу взносов")
+        }
         val updatedColl = collection.copy(
             name = normalizedName,
             target = round2(target),
-            participants = participants.distinct(),
-            contrib = collection.contrib.filterKeys { it in participants },
+            participants = newParticipants,
+            contrib = collection.contrib.filterKeys { it in newParticipants },
             sharedWithBudget = sharedWithBudget,
         )
         val newCollections = group.collections.map { if (it.name == name) updatedColl else it }
-        val newPayments = replaceCollectionPayments(group.payments, name, updatedColl)
+        val basePayments = replaceCollectionPayments(group.payments, name, updatedColl)
+        val newPayments = settleRemovedCollectionContributions(
+            basePayments = basePayments,
+            sourcePayments = group.payments,
+            collection = collection,
+            participants = newParticipants,
+            oldName = name,
+            newName = normalizedName,
+            action = removedContributionAction,
+        )
         val updated = group.copy(collections = newCollections, payments = newPayments)
         val newSummary = SummaryCalculator.compute(updated)
         writeData(

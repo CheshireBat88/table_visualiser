@@ -261,21 +261,31 @@ internal fun parseYesNo(v: Any?, default: Boolean = false): Boolean {
 }
 
 /**
- * Проверка перед сохранением сбора: нельзя молча стереть уже внесённые деньги,
- * убрав участника из списка (P0.9). Возвращает текст ошибки или null.
+ * Участники, которых убирают из сбора, но у кого уже есть внесённые деньги.
+ * Для них перед сохранением нужно явно выбрать: вернуть деньги или перевести
+ * взнос в месячные платежи (см. [RemovedContributionAction]).
+ */
+internal fun removedCollectionContributors(
+    collection: CollectionData,
+    participants: List<String>,
+): List<String> = collection.participants
+    .filter { it !in participants }
+    .filter { collection.contributed(it) >= 0.01 }
+
+/**
+ * Проверка перед сохранением сбора: убирать участника с внесёнными деньгами можно
+ * только с явным решением о судьбе взноса. Возвращает текст ошибки или null.
  */
 internal fun collectionParticipantRemovalError(
     collection: CollectionData,
     participants: List<String>,
 ): String? {
-    val removedWithMoney = collection.participants
-        .filter { it !in participants }
-        .filter { collection.contributed(it) >= 0.01 }
+    val removedWithMoney = removedCollectionContributors(collection, participants)
     return if (removedWithMoney.isEmpty()) {
         null
     } else {
-        "Сначала снимите отметку «сдал» у участников с внесёнными деньгами: " +
-            removedWithMoney.joinToString(", ")
+        "Решите, что сделать с деньгами участников (${removedWithMoney.joinToString(", ")}): " +
+            "вернуть их или перевести взнос в месячные платежи"
     }
 }
 

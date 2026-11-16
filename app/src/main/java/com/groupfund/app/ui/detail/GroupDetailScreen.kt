@@ -114,10 +114,12 @@ import com.groupfund.app.data.sheets.PaymentData
 import com.groupfund.app.data.sheets.PaymentInput
 import com.groupfund.app.data.sheets.PeriodStatistics
 import com.groupfund.app.data.sheets.PeriodSummary
+import com.groupfund.app.data.sheets.RemovedContributionAction
 import com.groupfund.app.data.sheets.SheetCodec
 import com.groupfund.app.data.sheets.SummaryCalculator
 import com.groupfund.app.data.sheets.money
 import com.groupfund.app.data.sheets.monthPlanLimit
+import com.groupfund.app.data.sheets.removedCollectionContributors
 import com.groupfund.app.data.sheets.round2
 import com.groupfund.app.ui.copyUrl
 import com.groupfund.app.ui.currencySymbol
@@ -217,6 +219,7 @@ var showCollectionDialog by remember { mutableStateOf(false) }
     var collTarget by remember { mutableStateOf("") }
     var collParticipants by remember { mutableStateOf(setOf<String>()) }
     var collShared by remember { mutableStateOf(true) }
+    var collRemovedAction by remember { mutableStateOf<RemovedContributionAction?>(null) }
     var collError by remember { mutableStateOf<String?>(null) }
 
     var showAddMember by remember { mutableStateOf(false) }
@@ -330,6 +333,7 @@ actions = {
                                 collTarget = ""
                                 collParticipants = group.activeMembers.map { it.name }.toSet()
                                 collShared = true
+                                collRemovedAction = null
                                 collError = null
                                 showCollectionDialog = true
                             },
@@ -348,6 +352,7 @@ onToggleMemberPaid = viewModel::toggleMemberPaid,
                                     }
                                     collParticipants = c.participants.toSet()
                                     collShared = c.sharedWithBudget
+                                    collRemovedAction = null
                                     showCollectionDialog = true
                                 }
                             },
@@ -371,7 +376,7 @@ onToggleMemberPaid = viewModel::toggleMemberPaid,
                                 canEdit = state.role == "creator",
                                 busy = state.busy,
                                 currency = group.currency,
-                                balance = summary?.rows?.find { it.member.name == selected }?.balance ?: 0.0,
+                                balance = summary.rows.find { it.member.name == selected }?.balance ?: 0.0,
                                 onClose = { selectedMember = null },
                                 onSave = { old, newName, birthday ->
                                     viewModel.updateMember(old, newName, birthday)
@@ -812,6 +817,7 @@ Text(
                     onDismissRequest = {
                         showCollectionDialog = false
                         editingCollection = null
+                        collRemovedAction = null
                     },
                     title = { Text(if (editingCollection == null) "Новый сбор" else "Изменить сбор") },
                     text = {
@@ -894,6 +900,74 @@ Text(
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                             )
+                            val editingData = editingCollection?.let { name ->
+                                group.collections.firstOrNull { it.name == name }
+                            }
+                            val removedWithMoney = editingData
+                                ?.let { removedCollectionContributors(it, collParticipants.toList()) }
+                                .orEmpty()
+                            if (removedWithMoney.isNotEmpty()) {
+                                val removedTotal = removedWithMoney.sumOf { editingData?.contributed(it) ?: 0.0 }
+                                HorizontalDivider()
+                                Text(
+                                    "Убираем участников с внесёнными деньгами: " +
+                                        removedWithMoney.joinToString(", ") +
+                                        " (${money(removedTotal)} ${currencySymbol(group.currency)}).",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                                Text(
+                                    "Что сделать с этими деньгами?",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                )
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            collRemovedAction = RemovedContributionAction.REFUND
+                                            collError = null
+                                        },
+                                ) {
+                                    RadioButton(
+                                        selected = collRemovedAction == RemovedContributionAction.REFUND,
+                                        onClick = {
+                                            collRemovedAction = RemovedContributionAction.REFUND
+                                            collError = null
+                                        },
+                                    )
+                                    Text("Вернуть деньги участникам")
+                                }
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            collRemovedAction = RemovedContributionAction.MONTHLY
+                                            collError = null
+                                        },
+                                ) {
+                                    RadioButton(
+                                        selected = collRemovedAction == RemovedContributionAction.MONTHLY,
+                                        onClick = {
+                                            collRemovedAction = RemovedContributionAction.MONTHLY
+                                            collError = null
+                                        },
+                                    )
+                                    Text("Перевести взносы в месячные платежи")
+                                }
+                                Text(
+                                    when (collRemovedAction) {
+                                        RemovedContributionAction.REFUND ->
+                                            "Строки сбора исчезнут из бюджета: деньги считаются возвращёнными."
+                                        RemovedContributionAction.MONTHLY ->
+                                            "Деньги останутся в бюджете обычными взносами и пойдут на месяцы."
+                                        null ->
+                                            "Без выбора сохранить нельзя — иначе непонятно, где останутся деньги."
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            }
                             collError?.let {
                                 Text(it, color = MaterialTheme.colorScheme.error)
                             }
@@ -910,6 +984,7 @@ Text(
                                         }
                                         showCollectionDialog = false
                                         editingCollection = null
+                                        collRemovedAction = null
                                         collError = null
                                     },
                                 ) {
@@ -919,10 +994,25 @@ Text(
                             TextButton(
                                 onClick = {
                                     val target = collTarget.toDoubleOrNull()
+                                    val editingData = editingCollection?.let { cName ->
+                                        group.collections.firstOrNull { it.name == cName }
+                                    }
+                                    val removedWithMoney = editingData
+                                        ?.let {
+                                            removedCollectionContributors(
+                                                it,
+                                                collParticipants.toList(),
+                                            )
+                                        }
+                                        .orEmpty()
                                     when {
                                         collName.isBlank() -> collError = "Укажите название сбора"
                                         target == null || target <= 0 -> collError = "Укажите сумму сбора"
                                         collParticipants.isEmpty() -> collError = "Выберите участников"
+                                        removedWithMoney.isNotEmpty() && collRemovedAction == null -> {
+                                            collError = "Выберите, что сделать с деньгами: " +
+                                                removedWithMoney.joinToString(", ")
+                                        }
                                         else -> {
                                             if (editingCollection == null) {
                                                 viewModel.createCollection(collName.trim(), target, collParticipants.toList(), collShared)
@@ -933,10 +1023,12 @@ Text(
                                                     target,
                                                     collParticipants.toList(),
                                                     collShared,
+                                                    collRemovedAction,
                                                 )
                                             }
                                             showCollectionDialog = false
                                             editingCollection = null
+                                            collRemovedAction = null
                                             collError = null
                                         }
                                     }
@@ -950,6 +1042,7 @@ Text(
                         TextButton(onClick = {
                             showCollectionDialog = false
                             editingCollection = null
+                            collRemovedAction = null
                         }) { Text("Отмена") }
                     },
                 )
@@ -3578,6 +3671,7 @@ private fun MemberCard(
     var saveError by remember { mutableStateOf<String?>(null) }
     var showPicker by remember { mutableStateOf(false) }
     var showOffMonths by remember { mutableStateOf(false) }
+    var showHistory by remember(member.name) { mutableStateOf(false) }
     var offSelection by remember(member.name) { mutableStateOf(member.offMonths.toSet()) }
     val nowMillis = remember { System.currentTimeMillis() }
     val pickerState = rememberDatePickerState(
@@ -3660,6 +3754,13 @@ val collectionShare = group.collections
                     )
                 }
             }
+        }
+
+        OutlinedButton(
+            onClick = { showHistory = true },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("История платежей")
         }
 
         if (canEdit && member.active) {
@@ -3850,6 +3951,15 @@ val collectionShare = group.collections
             dismissButton = {
                 TextButton(onClick = { showOffMonths = false }) { Text("Отмена") }
             },
+        )
+    }
+
+    if (showHistory) {
+        MemberPaymentHistoryDialog(
+            payments = group.payments,
+            memberName = member.name,
+            currency = currencySymbol(currency),
+            onDismiss = { showHistory = false },
         )
     }
 }

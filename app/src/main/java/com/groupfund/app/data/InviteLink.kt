@@ -39,6 +39,7 @@ internal fun parseInviteTarget(raw: String): String? {
     return text.takeIf(::isSpreadsheetId)
 }
 
-/** Google-идентификаторы таблиц состоят из букв, цифр, `-` и `_` и длиннее 20 символов. */
-internal fun isSpreadsheetId(value: String): Boolean =
-    value.length >= 20 && value.all { it.isLetterOrDigit() || it == '-' || it == '_' }
+/** Google-идентификаторы таблиц состоят из латинских букв, цифр, `-` и `_` и длиннее 20 символов. */
+internal fun isSpreadsheetId(value: String): Boolean = value.length >= 20 && value.all { c ->
+    c in 'A'..'Z' || c in 'a'..'z' || c in '0'..'9' || c == '-' || c == '_'
+}

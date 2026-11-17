@@ -274,18 +274,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     val target = marker?.newSpreadsheetId
                     if (!target.isNullOrEmpty() && target != entry.spreadsheetId) {
                         // Прежняя таблица передана: переключаемся на копию и роль, если были создателем.
-                        val meta = repository.spreadsheetMeta(target).getOrNull()
-                        registry.replaceSpreadsheet(account, entry.spreadsheetId) { e ->
-                            e.copy(
-                                spreadsheetId = target,
-                                title = meta?.first ?: e.title,
-                                spreadsheetUrl = meta?.second ?: e.spreadsheetUrl,
-                                role = if (e.role == "creator") "observer" else e.role,
-                                localTitle = null,
-                                unavailable = false,
-                            )
+                        // Но только если за id действительно группа: в старых таблицах столбцы E:F
+                        // были свободны, и заметка в F2 не должна уводить группу на чужой файл.
+                        if (repository.isGroupTable(target).getOrNull() == true) {
+                            val meta = repository.spreadsheetMeta(target).getOrNull()
+                            registry.replaceSpreadsheet(account, entry.spreadsheetId) { e ->
+                                e.copy(
+                                    spreadsheetId = target,
+                                    title = meta?.first ?: e.title,
+                                    spreadsheetUrl = meta?.second ?: e.spreadsheetUrl,
+                                    role = if (e.role == "creator") "observer" else e.role,
+                                    localTitle = null,
+                                    unavailable = false,
+                                )
+                            }
+                            return@forEach
                         }
-                        return@forEach
                     }
                     if (marker?.pendingCode != null && entry.role == "creator") {
                         pending += entry.id

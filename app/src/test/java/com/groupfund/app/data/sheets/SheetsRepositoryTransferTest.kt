@@ -57,12 +57,38 @@ class SheetsRepositoryTransferTest {
 
     @Test
     fun `маркер передачи читается из E1-F2`() = runBlocking {
+        val copyId = "1AbCdEfGhIjKlMnOpQrStUv"
         server.enqueue(
-            okJson("""{"values":[["transferPending","ABCD2345"],["transferTo","copy-1"]]}"""),
+            okJson("""{"values":[["transferPending","ABCD2345"],["transferTo","$copyId"]]}"""),
         )
         val marker = repository.readTransferMarker("sid").getOrThrow()
         assertEquals("ABCD2345", marker.pendingCode)
-        assertEquals("copy-1", marker.newSpreadsheetId)
+        assertEquals(copyId, marker.newSpreadsheetId)
+    }
+
+    @Test
+    fun `заметка в свободных столбцах E-F не считается маркером`() = runBlocking {
+        // До появления передачи столбцы E:F были свободны: заметка не должна
+        // уводить группу на посторонний id или блокировать передачу.
+        server.enqueue(
+            okJson(
+                """{"values":[["Заметка","позвонить Васе"],["Ссылка","https://example.com"]]}""",
+            ),
+        )
+        val marker = repository.readTransferMarker("sid").getOrThrow()
+        assertNull(marker.pendingCode)
+        assertNull(marker.newSpreadsheetId)
+        assertTrue(!transferStartBlocked(marker))
+    }
+
+    @Test
+    fun `маркер с ключами но неверным форматом игнорируется`() = runBlocking {
+        server.enqueue(
+            okJson("""{"values":[["transferPending","ABC"],["transferTo","не id"]]}"""),
+        )
+        val marker = repository.readTransferMarker("sid").getOrThrow()
+        assertNull(marker.pendingCode)
+        assertNull(marker.newSpreadsheetId)
     }
 
     @Test

@@ -1,10 +1,12 @@
-package com.groupfund.app.data.sheets
+﻿package com.groupfund.app.data.sheets
 
 import android.util.Log
 import com.groupfund.app.BuildConfig
+import com.groupfund.app.data.TRANSFER_CODE_LENGTH
 import com.groupfund.app.data.auth.OAuthConsentRequiredException
 import com.groupfund.app.data.auth.TokenProvider
 import com.groupfund.app.data.auth.TokenResult
+import com.groupfund.app.data.isSpreadsheetId
 import com.groupfund.app.data.registry.GroupEntry
 import com.groupfund.app.runCatchingExceptCancellation
 import kotlinx.coroutines.CancellationException
@@ -78,6 +80,13 @@ data class TransferMarker(
     val pendingCode: String? = null,
     val newSpreadsheetId: String? = null,
 )
+
+/** Ключи маркера в столбце E листа «Настройки»; значения лежат в F. */
+private const val TRANSFER_PENDING_KEY = "transferPending"
+private const val TRANSFER_DONE_KEY = "transferTo"
+
+/** Код передачи: ровно 8 латинских букв или цифр (как в ссылке передачи). */
+private val TRANSFER_CODE_REGEX = Regex("[A-Za-z0-9]{$TRANSFER_CODE_LENGTH}")
 
 /** Базовые адреса API. Вынесены, чтобы тесты подменяли их MockWebServer-ом. */
 internal const val SHEETS_BASE_URL = "https://sheets.googleapis.com/"
@@ -492,7 +501,14 @@ class SheetsRepository(
             (m.properties?.title?.takeIf { it.isNotBlank() } ?: "Группа") to (m.spreadsheetUrl ?: "")
         }
 
-    /** Читает маркер передачи из листа «Настройки» прежней таблицы. */
+    /**
+     * Читает маркер передачи из листа «Настройки» прежней таблицы.
+     *
+     * Диапазон E:F до появления передачи был свободен, поэтому значение в F
+     * принимается только при совпадении ключа в E и правдоподобном формате:
+     * иначе заметка пользователя в F2 увела бы группу на посторонний id.
+     * Таблицы, созданные версиями с передачей, пишут ключи и код сами.
+     */
     suspend fun readTransferMarker(spreadsheetId: String): Result<TransferMarker> =
         withToken { sheets, _, token ->
             val authHeader = "Bearer $token"
@@ -501,10 +517,13 @@ class SheetsRepository(
             }.getOrDefault(emptyList())
             fun cell(row: Int, col: Int): String =
                 rows.getOrNull(row)?.getOrNull(col)?.let { it.toString() }?.trim().orEmpty()
-            TransferMarker(
-                pendingCode = cell(0, 1).ifEmpty { null },
-                newSpreadsheetId = cell(1, 1).ifEmpty { null },
-            )
+            val pending = cell(0, 1).takeIf {
+                cell(0, 0) == TRANSFER_PENDING_KEY && TRANSFER_CODE_REGEX.matches(it)
+            }
+            val done = cell(1, 1).takeIf {
+                cell(1, 0) == TRANSFER_DONE_KEY && isSpreadsheetId(it)
+            }
+            TransferMarker(pendingCode = pending, newSpreadsheetId = done)
         }
 
     /** Пишет код передачи (создатель инициирует передачу; нужна запись в таблице). */
@@ -515,7 +534,7 @@ class SheetsRepository(
                 spreadsheetId,
                 BatchUpdateValuesRequest(
                     data = listOf(
-                        ValueRange("${Tabs.SETTINGS}!E1:F1", listOf(listOf("transferPending", pendingCode))),
+                        ValueRange("${Tabs.SETTINGS}!E1:F1", listOf(listOf(TRANSFER_PENDING_KEY, pendingCode))),
                     ),
                 ),
             )
@@ -569,7 +588,7 @@ class SheetsRepository(
                 spreadsheetId,
                 BatchUpdateValuesRequest(
                     data = listOf(
-                        ValueRange("${Tabs.SETTINGS}!E2:F2", listOf(listOf("transferTo", newSpreadsheetId))),
+                        ValueRange("${Tabs.SETTINGS}!E2:F2", listOf(listOf(TRANSFER_DONE_KEY, newSpreadsheetId))),
                     ),
                 ),
             )

@@ -38,4 +38,13 @@ class InviteLinkTest {
         assertNull(parseInviteTarget("groupfund://invite/short"))
         assertNull(parseInviteTarget("https://docs.google.com/spreadsheets/d/короткий/edit"))
     }
+
+    @Test
+    fun `кириллица в id не принимается`() {
+        // isLetterOrDigit пропускал кириллицу: «идентификатор» из 21 буквы
+        // выглядел как валидный id, хотя Google таких не выдаёт.
+        assertNull(parseInviteTarget("groupfund://invite/абвгдеёжзийклмнопрст"))
+        assertNull(parseInviteTarget("https://cheshirebat88.github.io/invite/абвгдеёжзийклмнопрст"))
+        assertNull(parseInviteTarget("абвгдеёжзийклмнопрстуфх"))
+    }
 }

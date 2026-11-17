@@ -26,16 +26,13 @@ import java.util.Locale
  */
 object SummaryImageRenderer {
 
-    private const val DENSITY = 2f
-    private const val MAX_WIDTH_DP = 1600f
-
-    private const val PAD = 14f
-    private const val NAME_W = 140f
-    private const val MONTH_W = 56f
-    private const val CELL_W = 64f
-    private const val UNTIL_W = 96f
-    private const val ROW_H = 26f
-    private const val HEAD_H = 28f
+    private const val PAD = SummaryImageLayout.PAD
+    private const val NAME_W = SummaryImageLayout.NAME_W
+    private const val MONTH_W = SummaryImageLayout.MONTH_W
+    private const val CELL_W = SummaryImageLayout.CELL_W
+    private const val UNTIL_W = SummaryImageLayout.UNTIL_W
+    private const val ROW_H = SummaryImageLayout.ROW_H
+    private const val HEAD_H = SummaryImageLayout.HEAD_H
 
     private const val TILE_GOOD = 0xFFC6EFCE.toInt()
     private const val TILE_WARN = 0xFFFFEB9C.toInt()
@@ -64,8 +61,8 @@ object SummaryImageRenderer {
         val requiredCount = s.requiredMonths.size
         val excluded = SummaryCalculator.excludedRows(group)
 
-        val tableW = NAME_W + cols.size * MONTH_W + 4 * CELL_W + UNTIL_W
-        val scale = DENSITY * minOf(1f, MAX_WIDTH_DP / tableW)
+        val tableW = SummaryImageLayout.tableWidthDp(cols.size)
+        val scale = SummaryImageLayout.scaleFor(tableW)
         val d = { v: Float -> v * scale }
 
         val pad = d(PAD)
@@ -76,11 +73,8 @@ object SummaryImageRenderer {
         val rowH = d(ROW_H)
         val headH = d(HEAD_H)
 
-        val width = (pad * 2 + tableW * scale).toInt().coerceAtLeast(1)
-        val exH = if (excluded.isEmpty()) 0f else d(34f) + headH + d(ROW_H) * excluded.size
-        val height = (
-            d(14f) + d(24f) + d(16f) + headH + (s.rows.size + 1) * rowH + exH + d(30f)
-            ).toInt().coerceAtLeast(1)
+        val width = SummaryImageLayout.widthPx(tableW, scale)
+        val height = SummaryImageLayout.heightPx(s.rows.size, excluded.size, scale)
 
         val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val c = Canvas(bmp)

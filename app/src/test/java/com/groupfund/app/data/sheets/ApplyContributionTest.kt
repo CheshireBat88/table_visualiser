@@ -47,4 +47,19 @@ class ApplyContributionTest {
         assertEquals(1008.5, a.balance, 0.0)
         assertTrue(a.perMonth.sum() >= 1008.5 - 0.001)
     }
+
+    @Test
+    fun zeroShareCollectionNeverWritesZeroRow() {
+        // Вырожденный сбор: цель 0 → доля 0. Строка «Сбор: Gift» на 0 только
+        // мусорила бы в листе, а деньги должны остаться обычным взносом.
+        val zero = CollectionData("Gift", "2026-01-01", 0.0, listOf("A", "B"), emptyMap(), true)
+        val (collections, payments) = applyContribution(
+            listOf(zero), emptyList(), "Gift", "A", 300.0,
+        )
+        assertTrue(payments.none { it.comment.startsWith(SummaryCalculator.COLLECTION_TAG_PREFIX) })
+        assertEquals(300.0, payments.single().amount, 0.0)
+        assertEquals("", payments.single().comment)
+        // Вклад в сбор не изменился: деньги ушли в месячный баланс.
+        assertEquals(0.0, collections.first().contrib["A"] ?: 0.0, 0.0)
+    }
 }

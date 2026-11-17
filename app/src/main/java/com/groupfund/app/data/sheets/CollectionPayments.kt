@@ -300,6 +300,12 @@ internal fun applyContribution(
         ?: error("Сбор не найден")
     if (memberName !in collection.participants) error("Участник не в этом сборе")
     val share = collection.sharePerPerson
+    if (share < 0.01) {
+        // Вырожденный сбор (нулевая цель): доля нулевая, и строка «Сбор: X» на 0
+        // только мусорила бы в листе. Деньги учитываем обычным взносом.
+        val asMonthly = PaymentData(memberName, SheetCodec.today(), round2(amount), "")
+        return collections to (payments + asMonthly)
+    }
     val newContrib = round2(collection.contributed(memberName) + amount)
     val updatedColl = collection.copy(
         contrib = collection.contrib + (memberName to newContrib),

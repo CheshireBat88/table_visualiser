@@ -21,6 +21,39 @@ class SheetsModelTest {
     }
 
     @Test
+    fun `cellNum разбирает разрядные разделители`() {
+        // Английский формат: запятая — тысячи, точка — копейки.
+        assertEquals(1430.0, cellNum("1,430.00"), 0.0)
+        assertEquals(1234567.89, cellNum("1,234,567.89"), 0.0)
+        // Русский формат: точка — тысячи, запятая — копейки.
+        assertEquals(1234.56, cellNum("1.234,56"), 0.0)
+        assertEquals(1234567.0, cellNum("1.234.567"), 0.0)
+        // Одиночный разделитель с тремя цифрами после — разряды, а не копейки.
+        assertEquals(1430.0, cellNum("1,430"), 0.0)
+        assertEquals(1430.0, cellNum("1.430"), 0.0)
+        // Одиночный разделитель с 1–2 цифрами после — копейки.
+        assertEquals(0.5, cellNum("0,5"), 0.0)
+        assertEquals(12.3456, cellNum("12.3456"), 0.0)
+        assertEquals(-1430.0, cellNum("−1,430.00"), 0.0)
+    }
+
+    @Test
+    fun `shareFor делит сумму на круг и не делит на ноль`() {
+        val all = listOf("A", "B", "C", "D")
+        val empty = ExpenseData("2026-01-01", "Ничего", 100.0, emptyList())
+        // Пустой круг — «все участники группы», а не вся сумма одному.
+        assertEquals(25.0, empty.shareFor(all), 0.0)
+        assertEquals(100.0, empty.fairTotalFor(all), 0.0)
+        // Пустая группа: делить не на кого.
+        assertEquals(0.0, empty.shareFor(emptyList()), 0.0)
+        assertEquals(0.0, empty.fairTotalFor(emptyList()), 0.0)
+        // Округление вверх до копейки одинаково для всех.
+        val odd = ExpenseData("2026-01-01", "Пицца", 100.0, listOf("A", "B", "C"))
+        assertEquals(33.34, odd.shareFor(all), 0.0)
+        assertEquals(100.02, odd.fairTotalFor(all), 0.0)
+    }
+
+    @Test
     fun `money форматирует целые и дробные`() {
         assertEquals("5", money(5.0))
         assertEquals("5.50", money(5.5))
@@ -44,7 +77,7 @@ class SheetsModelTest {
         val data = listOf(
             ExpenseData("2026-01-01", "Пицца", 1430.0, listOf("A", "B", "C")),
         )
-        val parsed = SheetCodec.parseExpenses(SheetCodec.expensesRows(data))
+        val parsed = SheetCodec.parseExpenses(SheetCodec.expensesRows(data, listOf("A", "B", "C")))
         assertEquals(data, parsed)
     }
 

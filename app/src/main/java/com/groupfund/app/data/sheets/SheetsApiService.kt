@@ -94,8 +94,16 @@ interface DriveApiService {
     suspend fun listPermissions(
         @Header("Authorization") authorization: String,
         @Path("fileId") fileId: String,
-        @Query("fields") fields: String = "permissions(role,type,emailAddress,domain)",
+        @Query("fields") fields: String = "permissions(id,role,type,emailAddress,domain)",
     ): PermissionListResponse
+
+    /** Убирает право; используется, чтобы закрыть доступ «по ссылке». */
+    @DELETE("drive/v3/files/{fileId}/permissions/{permissionId}")
+    suspend fun deletePermission(
+        @Header("Authorization") authorization: String,
+        @Path("fileId") fileId: String,
+        @Path("permissionId") permissionId: String,
+    )
 
     /** Удаляет файл навсегда (не в корзину). */
     @DELETE("drive/v3/files/{fileId}")
@@ -235,6 +243,7 @@ data class PermissionListResponse(
 )
 
 data class DrivePermission(
+    @SerializedName("id") val id: String? = null,
     @SerializedName("role") val role: String? = null,
     @SerializedName("type") val type: String? = null,
     @SerializedName("emailAddress") val emailAddress: String? = null,

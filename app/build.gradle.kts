@@ -13,8 +13,8 @@ android {
         applicationId = "com.groupfund.app"
         minSdk = 26
         targetSdk = 37
-        versionCode = 15
-        versionName = "1.0.15"
+        versionCode = 16
+        versionName = "1.0.16"
     }
 
     buildTypes {
@@ -30,6 +30,11 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    testOptions {
+        // android.util.Log в unit-тестах иначе бросает «not mocked»:
+        // репозиторий логирует HTTP-ошибки, а тесты проверяют их обработку.
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -61,4 +66,5 @@ dependencies {
     implementation("com.google.zxing:core:3.5.3")
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
+    testImplementation(libs.mockwebserver)
 }

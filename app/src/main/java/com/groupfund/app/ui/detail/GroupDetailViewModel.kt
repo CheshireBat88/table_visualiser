@@ -157,6 +157,33 @@ class GroupDetailViewModel(
         runLast()
     }
 
+    /**
+     * Закрывает доступ «по ссылке» (только создатель): ссылка и QR перестают
+     * работать. Уже подключённые участники при этом не теряют доступ, если он
+     * выдан им персонально; приглашать новых придётся заново.
+     */
+    fun closeLinkSharing() {
+        val entry = entry ?: return
+        if (_uiState.value.busy) return
+        lastAction = { doCloseLinkSharing(entry.spreadsheetId) }
+        runLast()
+    }
+
+    private suspend fun doCloseLinkSharing(spreadsheetId: String) {
+        val result = repository.closeLinkSharing(spreadsheetId)
+        _uiState.update { st ->
+            result.fold(
+                onSuccess = {
+                    st.copy(
+                        shareReady = false,
+                        error = "Доступ по ссылке закрыт — старые ссылки больше не работают",
+                    )
+                },
+                onFailure = { e -> opError(st, e, "Не удалось закрыть доступ по ссылке") },
+            )
+        }
+    }
+
     /** Повтор после выдачи согласия на OAuth-скопы. */
     fun retryLastAction() {
         runLast()
@@ -230,7 +257,14 @@ class GroupDetailViewModel(
             _uiState.update { it.copy(busy = true) }
             try {
                 if (entry.role == "creator") {
-                    repository.deleteFromDrive(entry.spreadsheetId)
+                    val result = repository.deleteFromDrive(entry.spreadsheetId)
+                    if (result.isFailure && result.exceptionOrNull() !is NotFoundException) {
+                        // Запись в реестре не трогаем: иначе экран скажет «удалено»,
+                        // а таблица останется на Диске.
+                        val reason = result.exceptionOrNull()?.message ?: "ошибка"
+                        _uiState.update { it.copy(error = "Не удалось удалить таблицу на Диске: $reason") }
+                        return@launch
+                    }
                 }
                 registry.removeGroup(email, entry.id)
                 _uiState.update { it.copy(deleted = true) }

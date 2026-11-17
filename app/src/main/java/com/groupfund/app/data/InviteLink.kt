@@ -40,5 +40,5 @@ internal fun parseInviteTarget(raw: String): String? {
 }
 
 /** Google-идентификаторы таблиц состоят из букв, цифр, `-` и `_` и длиннее 20 символов. */
-private fun isSpreadsheetId(value: String): Boolean =
+internal fun isSpreadsheetId(value: String): Boolean =
     value.length >= 20 && value.all { it.isLetterOrDigit() || it == '-' || it == '_' }

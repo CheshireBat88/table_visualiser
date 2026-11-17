@@ -1,5 +1,5 @@
 [versions]
-agp = "9.4.1"
+agp = "9.5.1"
 kotlin = "2.3.21"
 coreKtx = "1.16.0"
 lifecycle = "2.9.1"
@@ -42,6 +42,7 @@ androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", 
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraX" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraX" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

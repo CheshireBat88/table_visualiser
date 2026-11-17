@@ -12,6 +12,9 @@ import com.google.android.gms.auth.UserRecoverableAuthException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 
 const val SHEETS_SCOPE = "https://www.googleapis.com/auth/spreadsheets"
 const val DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
@@ -25,6 +28,15 @@ sealed interface TokenResult {
 class OAuthConsentRequiredException(val intent: Intent) : Exception("Требуется согласие на доступ к Google Таблицам")
 
 /**
+ * Источник OAuth-токенов. Отвязан от Android-аккаунтов, чтобы репозиторий можно
+ * было тестировать без устройства: в тестах подставляется фейковый провайдер.
+ */
+interface TokenProvider {
+    suspend fun accessToken(): TokenResult
+    suspend fun invalidateToken(token: String)
+}
+
+/**
  * Работа с Google-аккаунтом без капризного кэша GoogleSignIn:
  *
  *  - выбор аккаунта — системный AccountPicker (всегда показывает список и
@@ -33,7 +45,7 @@ class OAuthConsentRequiredException(val intent: Intent) : Exception("Требу�
  *  - согласие на доступ к таблицам/файлам Google покажет сам через
  *    UserRecoverableAuthException, а мы перезапустим его intent.
  */
-class GoogleAuthManager(private val appContext: Context) {
+class GoogleAuthManager(private val appContext: Context) : TokenProvider {
 
     private val prefs = appContext.getSharedPreferences("groupfund_auth", Context.MODE_PRIVATE)
     private val emailKey = "google_email"
@@ -100,17 +112,57 @@ class GoogleAuthManager(private val appContext: Context) {
 
     fun isSignedIn(): Boolean = storedEmail() != null
 
-    fun signOut() {
+    /**
+     * Выход из аккаунта. Перед удалением email отзывает выданный токен у Google:
+     * без этого getToken вернул бы тот же действующий токен, а выданный доступ
+     * оставался бы в силе. Отзыв — best-effort: сеть может быть недоступна, но
+     * выйти из приложения пользователь должен всегда.
+     */
+    suspend fun signOut() = withContext(Dispatchers.IO) {
+        val email = storedEmail()
+        if (email != null) {
+            val token = runCatching {
+                deviceAccount(email)?.let { account ->
+                    GoogleAuthUtil.getToken(appContext, account, "oauth2:$SHEETS_SCOPE $DRIVE_FILE_SCOPE")
+                }
+            }.getOrNull()
+            if (token != null) {
+                revokeToken(token)
+                runCatching { GoogleAuthUtil.invalidateToken(appContext, token) }
+            }
+        }
+        clearSignIn()
+    }
+
+    /** Локальная чистка без сети: используется, когда аккаунт исчез с устройства. */
+    private fun clearSignIn() {
         prefs.edit().remove(emailKey).apply()
     }
 
-    suspend fun accessToken(): TokenResult = withContext(Dispatchers.IO) { requestToken() }
+    /** POST на endpoint отзыва Google (RFC 7009): без тела ответа, ошибки глотаем. */
+    private fun revokeToken(token: String) {
+        runCatching {
+            val conn = (URL("https://oauth2.googleapis.com/revoke").openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 5_000
+                readTimeout = 5_000
+                setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            }
+            val body = "token=" + URLEncoder.encode(token, "UTF-8")
+            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            conn.responseCode
+            conn.disconnect()
+        }
+    }
+
+    override suspend fun accessToken(): TokenResult = withContext(Dispatchers.IO) { requestToken() }
 
     /**
      * Сбрасывает закэшированный GoogleAuthUtil токен. Нужно при 401: getToken без
      * инвалидации вернул бы тот же протухший токен, и повтор снова упал бы.
      */
-    suspend fun invalidateToken(token: String) = withContext(Dispatchers.IO) {
+    override suspend fun invalidateToken(token: String) = withContext(Dispatchers.IO) {
         runCatching { GoogleAuthUtil.invalidateToken(appContext, token) }
         Unit
     }
@@ -120,7 +172,7 @@ class GoogleAuthManager(private val appContext: Context) {
             ?: return TokenResult.Error("Пользователь не вошёл в Google. Нажмите «Войти».")
         val account = deviceAccount(email)
             ?: run {
-                signOut()
+                clearSignIn()
                 return TokenResult.Error("Этот Google-аккаунт больше не доступен на устройстве. Войдите под аккаунтом, у которого есть доступ к таблице.")
             }
         return try {

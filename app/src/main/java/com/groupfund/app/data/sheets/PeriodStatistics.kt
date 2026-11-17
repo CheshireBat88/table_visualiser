@@ -59,10 +59,10 @@ object PeriodStatistics {
         if (poolSize == 0 || total <= 0.0) 0.0 else ceilCent(total / poolSize)
 
     private fun yearMonthOf(date: String): YearMonth? =
-        runCatching { YearMonth.from(LocalDate.parse(date)) }.getOrNull()
+        parseSheetDate(date)?.let { YearMonth.from(it) }
 
     private fun inRange(date: String, from: LocalDate, to: LocalDate): Boolean {
-        val d = runCatching { LocalDate.parse(date) }.getOrNull() ?: return false
+        val d = parseSheetDate(date) ?: return false
         return !d.isBefore(from) && !d.isAfter(to)
     }
 

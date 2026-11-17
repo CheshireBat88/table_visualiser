@@ -678,6 +678,14 @@ Text(
                                 Button(onClick = { copyUrl(context, inviteLink) }) {
                                     Text("Копировать ссылку")
                                 }
+                                if (state.role == "creator") {
+                                    TextButton(onClick = { viewModel.closeLinkSharing() }) {
+                                        Text(
+                                            "Закрыть доступ по ссылке",
+                                            color = MaterialTheme.colorScheme.error,
+                                        )
+                                    }
+                                }
                             }
                         }
                     },
@@ -3086,6 +3094,7 @@ private fun ExpensesTab(
     onDeleteExpense: (Int) -> Unit,
 ) {
     var expandedIndices by remember { mutableStateOf(setOf<Int>()) }
+    val allNames = group.members.map { it.name }
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -3151,11 +3160,11 @@ private fun ExpensesTab(
                                     )
                                     Spacer(Modifier.height(2.dp))
                                     Text(
-                                        "${e.date} · участников: ${e.participants.size}",
+                                        "${e.date} · участников: ${e.pool(allNames).size}",
                                         style = MaterialTheme.typography.bodySmall,
                                     )
                                     Spacer(Modifier.height(4.dp))
-                                    e.participants.sorted().forEach { name ->
+                                    e.pool(allNames).sorted().forEach { name ->
                                         Row(
                                             verticalAlignment = Alignment.CenterVertically,
                                             modifier = Modifier.padding(start = 4.dp),
@@ -3166,7 +3175,7 @@ private fun ExpensesTab(
                                                 modifier = Modifier.weight(1f),
                                             )
                                             Text(
-                                                "${money(e.averageShare)} ${currencySymbol(group.currency)}",
+                                                "${money(e.shareFor(allNames))} ${currencySymbol(group.currency)}",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                                             )
@@ -3176,12 +3185,12 @@ private fun ExpensesTab(
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Column(Modifier.weight(1f)) {
                                             Text(
-                                                "Итого: ${money(e.fairTotal)} ${currencySymbol(group.currency)}",
+                                                "Итого: ${money(e.fairTotalFor(allNames))} ${currencySymbol(group.currency)}",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 fontWeight = FontWeight.Bold,
                                             )
                                             Text(
-                                                "доля/чел: ${money(e.averageShare)}",
+                                                "доля/чел: ${money(e.shareFor(allNames))}",
                                                 style = MaterialTheme.typography.labelSmall,
                                             )
                                         }
@@ -3219,7 +3228,7 @@ private fun ExpensesTab(
                                         Column(Modifier.weight(1f)) {
                                             Text(e.description, style = MaterialTheme.typography.bodyMedium)
                                             Text(
-                                                "доля: ${money(e.averageShare)} · итого: ${money(e.fairTotal)} ${currencySymbol(group.currency)}",
+                                                "доля: ${money(e.shareFor(allNames))} · итого: ${money(e.fairTotalFor(allNames))} ${currencySymbol(group.currency)}",
                                                 style = MaterialTheme.typography.labelSmall,
                                             )
                                         }

@@ -574,13 +574,7 @@ private fun AcceptResultDialog(
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
-            Text(
-                when {
-                    result.autoFinalized -> "Группа принята"
-                    result.alreadyTransferredTo != null -> "Копия сохранена"
-                    else -> "Копия готова"
-                },
-            )
+            Text(if (result.autoFinalized) "Группа принята" else "Копия готова")
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -588,15 +582,6 @@ private fun AcceptResultDialog(
                     Text(
                         "Таблица скопирована на ваш диск, и все участники уже переключаются " +
                             "на неё автоматически. Вы теперь ведущий группы.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                } else if (result.alreadyTransferredTo != null) {
-                    Text(
-                        "Копия сохранена в вашем списке как отдельная группа. Но передача " +
-                            "уже завершена другим получателем: участники переключаются на его " +
-                            "таблицу автоматически.\n\nЕсли нужно, чтобы ведущим были вы — " +
-                            "попросите прежнего ведущего завершить передачу именно на вашу копию " +
-                            "или отменить текущую.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 } else {
@@ -642,7 +627,10 @@ private fun ConfirmRemoveRetiredDialog(
         text = {
             Text(
                 "Прежняя таблица группы «${entry.title}» будет удалена из вашего Google Диска " +
-                    "безвозвратно. Участники уже работают с новой таблицей.",
+                    "безвозвратно.\n\nНовый адрес группы хранится только в этой прежней таблице: " +
+                    "участники, которые ещё ни разу не открывали приложение после передачи, " +
+                    "потеряют доступ к группе. Если не уверены, что все уже переключились, — " +
+                    "оставьте прежнюю версию.",
             )
         },
         confirmButton = {

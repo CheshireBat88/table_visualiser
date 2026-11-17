@@ -2,8 +2,8 @@ package com.groupfund.app.data.sheets
 
 import android.util.Log
 import com.groupfund.app.BuildConfig
-import com.groupfund.app.data.auth.GoogleAuthManager
 import com.groupfund.app.data.auth.OAuthConsentRequiredException
+import com.groupfund.app.data.auth.TokenProvider
 import com.groupfund.app.data.auth.TokenResult
 import com.groupfund.app.data.registry.GroupEntry
 import com.groupfund.app.runCatchingExceptCancellation
@@ -79,6 +79,10 @@ data class TransferMarker(
     val newSpreadsheetId: String? = null,
 )
 
+/** Базовые адреса API. Вынесены, чтобы тесты подменяли их MockWebServer-ом. */
+internal const val SHEETS_BASE_URL = "https://sheets.googleapis.com/"
+internal const val DRIVE_BASE_URL = "https://www.googleapis.com/"
+
 /**
  * Репозиторий поверх Sheets/Drive API. Внутри берёт актуальный OAuth-токен
  * из GoogleAuthManager и подставляет его в каждый запрос.
@@ -86,7 +90,11 @@ data class TransferMarker(
  * Таблица — источник истины: «Сводка» всегда пересчитывается локально из
  * листов Участники/Платежи/Расходы/Настройки и перезаписывается целиком.
  */
-class SheetsRepository(private val auth: GoogleAuthManager) {
+class SheetsRepository(
+    private val auth: TokenProvider,
+    private val sheetsBaseUrl: String = SHEETS_BASE_URL,
+    private val driveBaseUrl: String = DRIVE_BASE_URL,
+) {
 
     /** Маркер в appProperties файла Drive — «создано приложением». */
     private companion object {
@@ -99,6 +107,11 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         val A1_CELL = Regex("^([A-Za-z]+)(\\d+)$")
         /** Маркер передачи в листе «Настройки»: E1:F1 — код передачи, E2:F2 — id копии. */
         val TRANSFER_MARKER_RANGE = "${Tabs.SETTINGS}!E1:F2"
+        /**
+         * Проба «Настроек» для опознания группы: ключи и заголовок плана месяцев
+         * лежат выше, запас строк — на случай расширенного окна месяцев.
+         */
+        const val SETTINGS_PROBE_RANGE = "${Tabs.SETTINGS}!A1:B200"
         const val TRANSFER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
         /** Потолки только на ЧТЕНИЕ: сколько строк запрашиваем, если данных больше не придумать. */
@@ -110,11 +123,11 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
     }
 
     private val sheetsApi: SheetsApiService by lazy {
-        buildApi(SheetsApiService::class.java, "https://sheets.googleapis.com/")
+        buildApi(SheetsApiService::class.java, sheetsBaseUrl)
     }
 
     private val driveApi: DriveApiService by lazy {
-        buildApi(DriveApiService::class.java, "https://www.googleapis.com/")
+        buildApi(DriveApiService::class.java, driveBaseUrl)
     }
 
     /** sheetId по имени листа (кэш: id листов не меняются, пока набор листов тот же). */
@@ -353,13 +366,34 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         }
 
     /**
-     * Открывает доступ «по ссылке» (тип anyone, роль reader). Раньше ошибки глотались
+     * Открывает доступ «по ссылке» (тип anyone, роль reader) идемпотентно:
+     * если доступ уже открыт, второе право не создаётся. Раньше ошибки глотались
      * («уже доступна по ссылке»), из-за чего QR показывался, а доступа у наблюдателей
      * не было → Google отдавал им 404. Теперь ошибка доходит до withToken, который
      * лечит 401/403 свежим токеном, а при настоящем отказе предупредит создателя.
      */
     suspend fun shareForInvite(spreadsheetId: String): Result<Unit> = withToken { _, drive, token ->
-        drive.addPermission("Bearer $token", spreadsheetId, body = PermissionRequest())
+        val authHeader = "Bearer $token"
+        val existing = runCatchingExceptCancellation {
+            drive.listPermissions(authHeader, spreadsheetId).permissions.orEmpty()
+        }.getOrDefault(emptyList())
+        if (existing.any { it.type == "anyone" }) return@withToken Unit
+        drive.addPermission(authHeader, spreadsheetId, body = PermissionRequest())
+        Unit
+    }
+
+    /**
+     * Закрывает доступ «по ссылке»: удаляет все права типа anyone. Ссылка и QR
+     * приглашения после этого перестают работать, а уже подключённые участники
+     * сохраняют доступ, если он выдан им персонально.
+     */
+    suspend fun closeLinkSharing(spreadsheetId: String): Result<Unit> = withToken { _, drive, token ->
+        val authHeader = "Bearer $token"
+        val anyone = drive.listPermissions(authHeader, spreadsheetId).permissions.orEmpty()
+            .filter { it.type == "anyone" && !it.id.isNullOrEmpty() }
+        anyone.forEach { permission ->
+            drive.deletePermission(authHeader, spreadsheetId, permission.id!!)
+        }
         Unit
     }
 
@@ -377,7 +411,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
      * что это настоящая таблица группы, открывает доступ «по ссылке»
      * и возвращает GroupEntry с ролью "observer".
      */
-    suspend fun prepareInvite(spreadsheetId: String): Result<GroupEntry> = withToken { sheets, _, token ->
+    suspend fun prepareInvite(spreadsheetId: String): Result<GroupEntry> = withToken { sheets, drive, token ->
         val authHeader = "Bearer $token"
         val meta = try {
             sheets.getSpreadsheetMeta(authHeader, spreadsheetId)
@@ -395,6 +429,9 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         if (!Tabs.CORE.all { it in titles }) {
             error("Это не таблица группы: отсутствуют нужные листы")
         }
+        if (!isGroupContent(sheets, drive, authHeader, spreadsheetId, titles)) {
+            error("Это не таблица группы: в «Настройках» нет обязательных полей")
+        }
         GroupEntry(
             id = UUID.randomUUID().toString(),
             title = meta.properties?.title?.takeIf { it.isNotBlank() } ?: "Группа",
@@ -403,6 +440,42 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             role = "observer",
             createdAtEpochMillis = System.currentTimeMillis(),
         )
+    }
+
+    /**
+     * Проверяет, что по id доступна настоящая таблица группы (используется при
+     * завершении передачи: в поле кода можно вставить чужой id по ошибке).
+     */
+    suspend fun isGroupTable(spreadsheetId: String): Result<Boolean> = withToken { sheets, drive, token ->
+        val authHeader = "Bearer $token"
+        val meta = sheets.getSpreadsheetMeta(authHeader, spreadsheetId)
+        val titles = meta.sheets.orEmpty().mapNotNull { it.properties?.title }
+        if (!Tabs.CORE.all { it in titles }) return@withToken false
+        isGroupContent(sheets, drive, authHeader, spreadsheetId, titles)
+    }
+
+    /**
+     * Признак настоящей группы: метка в appProperties (видна только своим файлам
+     * под scope `drive.file`) либо узнаваемый лист «Настройки». Одного совпадения
+     * имён листов мало — таблицу с такими именами мог сделать кто угодно.
+     */
+    private suspend fun isGroupContent(
+        sheets: SheetsApiService,
+        drive: DriveApiService,
+        authHeader: String,
+        spreadsheetId: String,
+        titles: List<String>,
+    ): Boolean {
+        if (!Tabs.CORE.all { it in titles }) return false
+        val marked = runCatchingExceptCancellation {
+            drive.getFile(authHeader, spreadsheetId, "appProperties")
+                .appProperties?.get(APP_MARKER_KEY) == APP_MARKER_VALUE
+        }.getOrDefault(false)
+        if (marked) return true
+        val settings = runCatchingExceptCancellation {
+            sheets.getValues(authHeader, spreadsheetId, SETTINGS_PROBE_RANGE).values.orEmpty()
+        }.getOrDefault(emptyList())
+        return isGroupSettings(settings)
     }
 
     /** Удаляет файл таблицы с Google Drive (только если токен доступен). */
@@ -458,6 +531,30 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
                 BatchUpdateValuesRequest(
                     data = listOf(
                         ValueRange("${Tabs.SETTINGS}!E1:F1", listOf(listOf("", ""))),
+                    ),
+                ),
+            )
+            Unit
+        }
+
+    /**
+     * Стирает маркер передачи целиком (и код, и id копии).
+     *
+     * Нужен копии при приёме: `files.copy` переносит лист «Настройки» вместе с
+     * диапазоном E1:F2, и унаследованный `pendingCode` блокировал бы новому
+     * ведущему следующую передачу («уже идёт или завершена передача»).
+     */
+    suspend fun clearTransferMarker(spreadsheetId: String): Result<Unit> =
+        withToken { sheets, _, token ->
+            sheets.batchUpdateValues(
+                "Bearer $token",
+                spreadsheetId,
+                BatchUpdateValuesRequest(
+                    data = listOf(
+                        ValueRange(
+                            TRANSFER_MARKER_RANGE,
+                            listOf(listOf("", ""), listOf("", "")),
+                        ),
                     ),
                 ),
             )
@@ -528,6 +625,12 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         )
         val copyId = copy.id ?: error("Google не вернул id копии")
 
+        // Копия унаследовала служебные ячейки маркера передачи из «Настроек».
+        // Чистим сразу: иначе новый ведущий не сможет передать группу дальше.
+        clearTransferMarker(copyId).onFailure {
+            Log.w("SheetsApi", "clearTransferMarker on copy $copyId failed", it)
+        }
+
         // Переносим права исходника на копию (кроме владельца — им становится получатель).
         val perms = runCatchingExceptCancellation {
             drive.listPermissions(authHeader, spreadsheetId).permissions.orEmpty()
@@ -564,16 +667,12 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
 
     /** Сверяет копию с оригиналом; при расхождении бросает понятную ошибку. */
     private fun verifyCopyComplete(old: GroupData, copy: GroupData) {
-        val gaps = mutableListOf<String>()
-        if (old.baseAmount != copy.baseAmount || old.currency != copy.currency) gaps += "настройки"
-        if (old.months != copy.months) gaps += "план месяцев"
-        if (old.members.map { it.name }.sorted() != copy.members.map { it.name }.sorted()) gaps += "участники"
-        if (old.payments.size != copy.payments.size) gaps += "число платежей"
-        if (round2(old.payments.sumOf { it.amount }) != round2(copy.payments.sumOf { it.amount })) gaps += "сумму платежей"
-        if (old.expenses.size != copy.expenses.size) gaps += "число расходов"
-        if (old.collections.map { it.name }.sorted() != copy.collections.map { it.name }.sorted()) gaps += "сборы"
+        val gaps = copyGaps(old, copy)
         if (gaps.isNotEmpty()) {
-            error("Копия неполная — не совпадают $gaps. Повторите передачу и проверьте, что диск не переполнен")
+            error(
+                "Копия неполная — не совпадают ${gaps.joinToString(", ")}. " +
+                    "Повторите передачу и проверьте, что диск не переполнен",
+            )
         }
     }
 
@@ -1143,7 +1242,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
         )
         if (renamed) {
             data.add(vrange(Tabs.PAYMENTS, SheetCodec.paymentsRows(newPayments)))
-            data.add(vrange(Tabs.EXPENSES, SheetCodec.expensesRows(newExpenses)))
+            data.add(vrange(Tabs.EXPENSES, SheetCodec.expensesRows(newExpenses, updatedGroup.members.map { it.name })))
             data.add(vrange(Tabs.COLLECTIONS, SheetCodec.collectionsRows(newCollections)))
         }
         writeData(sheets, authHeader, spreadsheetId, updatedGroup, data)
@@ -1255,7 +1354,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses)),
+                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses, updated.members.map { it.name })),
                 vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
             ),
         )
@@ -1338,7 +1437,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses)),
+                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses, updated.members.map { it.name })),
                 vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
             ),
         )
@@ -1449,7 +1548,7 @@ class SheetsRepository(private val auth: GoogleAuthManager) {
             spreadsheetId,
             updated,
             listOf(
-                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses)),
+                vrange(Tabs.EXPENSES, SheetCodec.expensesRows(updated.expenses, updated.members.map { it.name })),
                 vrange(Tabs.SUMMARY, SummaryCalculator.summaryRows(updated, summary)),
             ),
         )

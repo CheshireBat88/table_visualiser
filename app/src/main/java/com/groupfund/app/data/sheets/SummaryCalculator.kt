@@ -180,6 +180,7 @@ object SummaryCalculator {
     fun summaryRows(group: GroupData, s: GroupSummary): List<List<Any?>> {
         val months = s.months
         val columns = s.requiredIndices
+        val allNames = group.members.map { it.name }
         val rows = mutableListOf<List<Any?>>()
         rows.add(listOf(group.title))
         rows.add(emptyList())
@@ -222,7 +223,7 @@ object SummaryCalculator {
                         e.description,
                         money(e.amount),
                         if (e.participants.isEmpty()) "все" else e.participants.joinToString("; "),
-                        money(e.averageShare),
+                        money(e.shareFor(allNames)),
                     ),
                 )
             }

@@ -57,6 +57,32 @@ class PeriodStatisticsTest {
     }
 
     @Test
+    fun manualDatesAreRecognisedInPeriod() {
+        // Лист можно править руками: даты в «31.01.2026», «31/01/2026» и
+        // серийным номером Google Sheets не должны выпадать из периода.
+        val g = group(
+            expenses = listOf(
+                e("31.01.2026", 100.0, members),
+                e("31/01/2026", 200.0, members),
+                e("46054", 300.0, members), // 2026-02-01 — вне января
+            ),
+            payments = listOf(p("Аня", "30.01.2026", 50.0)),
+        )
+        val s = PeriodStatistics.compute(g, jan, janEnd)
+        assertEquals(300.0, s.expensesTotal, 0.0)
+        assertEquals(50.0, s.incomeTotal, 0.0)
+        assertEquals(2, s.expenses.size)
+    }
+
+    @Test
+    fun manualDatesFeedMemberMonthlyShares() {
+        val g = group(expenses = listOf(e("15.01.2026", 300.0, listOf("Аня"))))
+        val months = listOf(MonthPlan(YearMonth.of(2026, 1), true, 100))
+        val shares = PeriodStatistics.memberExpenseSharesByMonth(g, "Аня", months)
+        assertEquals(300.0, shares[YearMonth.of(2026, 1)] ?: 0.0, 0.0)
+    }
+
+    @Test
     fun incomeExcludesRefundsAndOffBudgetContributions() {
         val standalone = c("Подарок", "2026-01-05", 500.0, members, shared = false)
         val g = group(payments = listOf(

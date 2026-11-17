@@ -73,13 +73,24 @@ data class ExpenseData(
     val amount: Double,
     val participants: List<String>,
 ) {
-    /** Доля с каждого участника (округляется вверх до копейки — все платят одинаково). */
-    val averageShare: Double
-        get() = if (participants.isEmpty()) amount else ceilCent(amount / participants.size)
+    /**
+     * Круг участников расхода: пустой список означает «все участники группы».
+     * Размер круга берётся из группы, поэтому доля не может быть посчитана без неё.
+     */
+    fun pool(allMembers: List<String>): List<String> = participants.ifEmpty { allMembers }
 
-    /** Итого с учётом округления: averageShare × число участников (может быть чуть больше amount). */
-    val fairTotal: Double
-        get() = round2(averageShare * participants.size)
+    /**
+     * Доля с одного участника круга (округляется вверх до копейки — все платят
+     * одинаково). Для пустого круга и пустой группы — 0.
+     */
+    fun shareFor(allMembers: List<String>): Double {
+        val members = pool(allMembers)
+        return if (members.isEmpty()) 0.0 else ceilCent(amount / members.size)
+    }
+
+    /** Итого с учётом округления: доля × размер круга (может быть чуть больше amount). */
+    fun fairTotalFor(allMembers: List<String>): Double =
+        round2(shareFor(allMembers) * pool(allMembers).size)
 }
 
 /**
@@ -202,12 +213,59 @@ internal fun cellText(v: Any?): String = when (v) {
 internal fun cellNum(v: Any?): Double = when (v) {
     null -> 0.0
     is Number -> v.toDouble()
-    else -> {
-        // Терпим ручной ввод: «500», «500,00», «1 234,56 ₽», «-300».
-        val s = v.toString().trim().replace(" ", "").replace("\u00A0", "").replace(',', '.')
-        val num = s.takeWhile { it.isDigit() || it == '.' || it == '-' }
-        num.toDoubleOrNull() ?: 0.0
+    else -> parseCellNumber(v.toString())
+}
+
+/**
+ * Разбирает число из текста ячейки, введённого вручную.
+ *
+ * Поддерживаются оба соглашения о разделителях: «500», «500,00», «1 234,56 ₽»,
+ * «1,430.00», «1.234,56», «-300». Правило: если в строке есть и «,» и «.», то
+ * десятичный — последний из них, а другой считается разрядным; одиночный
+ * разделитель с тремя цифрами после и 1–3 цифрами до считается разрядным
+ * («1,430» → 1430, «1.234» → 1234), иначе — десятичным («0,5» → 0.5).
+ *
+ * Неразбираемый текст даёт 0.0 — прежнее поведение (ячейка не ломает чтение группы).
+ */
+internal fun parseCellNumber(raw: String): Double {
+    val cleaned = raw.trim()
+        .replace(" ", "")
+        .replace("\u00A0", "")
+        .replace("\u202F", "")
+        .map { if (it == '\u2212') '-' else it }
+        .filter { it.isDigit() || it == ',' || it == '.' || it == '-' }
+        .joinToString("")
+    val negative = cleaned.startsWith('-')
+    val body = cleaned.removePrefix("-")
+    if (body.isEmpty()) return 0.0
+    val sep = decimalSeparator(body)
+    val normalized = if (sep == null) {
+        body.filter { it.isDigit() }
+    } else {
+        val cut = body.lastIndexOf(sep)
+        val intPart = body.substring(0, cut).filter { it.isDigit() }
+        val fracPart = body.substring(cut + 1).filter { it.isDigit() }
+        "$intPart.$fracPart"
     }
+    val num = normalized.toDoubleOrNull() ?: return 0.0
+    return if (negative) -num else num
+}
+
+/** Десятичный разделитель в числе либо null, если все разделители разрядные. */
+private fun decimalSeparator(body: String): Char? {
+    val commas = body.count { it == ',' }
+    val dots = body.count { it == '.' }
+    if (commas == 0 && dots == 0) return null
+    if (commas > 0 && dots > 0) {
+        return if (body.lastIndexOf(',') > body.lastIndexOf('.')) ',' else '.'
+    }
+    val sep = if (commas > 0) ',' else '.'
+    if (commas + dots > 1) return null
+    val idx = body.indexOf(sep)
+    val before = body.substring(0, idx).count { it.isDigit() }
+    val after = body.substring(idx + 1).count { it.isDigit() }
+    // «1,430» / «1.430» — разряды, а не копейки: денег с тремя знаками не бывает.
+    return if (after == 3 && before in 1..3) null else sep
 }
 
 /** Символы, которые ломают списки имён в листах «На кого» и «Участники». */
@@ -455,7 +513,7 @@ object SheetCodec {
     fun expensesHeader(): List<List<Any?>> =
         listOf(listOf("Дата", "Описание", "Сумма", "Участники", "Доля на каждого"))
 
-    fun expensesRows(data: List<ExpenseData>): List<List<Any?>> {
+    fun expensesRows(data: List<ExpenseData>, allMembers: List<String>): List<List<Any?>> {
         val rows = mutableListOf(listOf("Дата", "Описание", "Сумма", "Участники", "Доля на каждого") as List<Any?>)
         data.forEach { e ->
             rows.add(
@@ -464,7 +522,7 @@ object SheetCodec {
                     e.description,
                     e.amount,
                     e.participants.joinToString("; "),
-                    money(e.averageShare),
+                    money(e.shareFor(allMembers)),
                 ),
             )
         }

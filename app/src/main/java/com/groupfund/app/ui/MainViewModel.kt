@@ -4,8 +4,11 @@ import android.app.Application
 import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.groupfund.app.data.TRANSFER_CODE_LENGTH
+import com.groupfund.app.data.TransferLinkParts
 import com.groupfund.app.data.auth.GoogleAuthManager
 import com.groupfund.app.data.auth.OAuthConsentRequiredException
+import com.groupfund.app.data.parseTransferLink
 import com.groupfund.app.data.registry.GroupEntry
 import com.groupfund.app.data.registry.GroupRegistry
 import com.groupfund.app.data.sheets.GroupIndexRepository
@@ -13,7 +16,10 @@ import com.groupfund.app.data.sheets.IndexEntry
 import com.groupfund.app.data.sheets.NotFoundException
 import com.groupfund.app.data.sheets.SheetCodec
 import com.groupfund.app.data.sheets.SheetsRepository
+import com.groupfund.app.data.sheets.TransferOutcome
+import com.groupfund.app.data.sheets.decideTransferOutcome
 import com.groupfund.app.data.sheets.observerToCreatorCandidates
+import com.groupfund.app.data.sheets.transferStartBlocked
 import com.groupfund.app.notifications.BirthdayCheck
 import com.groupfund.app.runCatchingExceptCancellation
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -58,8 +64,6 @@ data class AcceptTransferResult(
     /** true — новая ссылка записана в прежнюю таблицу, участники переключатся сами. */
     val autoFinalized: Boolean,
     val newSpreadsheetId: String,
-    /** Если не null — передача уже завершена другим получателем (id его копии). */
-    val alreadyTransferredTo: String? = null,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -350,16 +354,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun signOut() {
-        auth.signOut()
-        repository.clearSheetIdCache()
-        refreshSignedIn()
+        viewModelScope.launch {
+            // Сначала отзываем доступ у Google (best-effort), затем чистим локальное
+            // состояние: иначе токен оставался бы валидным после «выхода».
+            auth.signOut()
+            repository.clearSheetIdCache()
+            refreshSignedIn()
+        }
     }
 
     fun deleteGroup(entry: GroupEntry) {
         viewModelScope.launch {
             val email = auth.storedEmail() ?: return@launch
             if (entry.role == "creator") {
-                repository.deleteFromDrive(entry.spreadsheetId)
+                val result = repository.deleteFromDrive(entry.spreadsheetId)
+                if (result.isFailure && result.exceptionOrNull() !is NotFoundException) {
+                    // Не удаляем запись локально: иначе группа «исчезнет» из списка,
+                    // хотя таблица на Диске осталась — и наоборот, пользователь
+                    // решит, что файл уничтожен, а он жив.
+                    val reason = result.exceptionOrNull()?.message ?: "ошибка"
+                    _uiState.update { it.copy(error = "Не удалось удалить таблицу на Диске: $reason") }
+                    return@launch
+                }
             }
             registry.removeGroup(email, entry.id)
         }
@@ -369,7 +385,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val transferAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
-    private fun randomTransferCode(length: Int = 8): String = buildString {
+    private fun randomTransferCode(length: Int = TRANSFER_CODE_LENGTH): String = buildString {
         repeat(length) { append(transferAlphabet.random()) }
     }
 
@@ -391,7 +407,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val marker = repository.readTransferMarker(entry.spreadsheetId).getOrNull()
-            if (marker?.pendingCode != null || marker?.newSpreadsheetId != null) {
+            if (marker != null && transferStartBlocked(marker)) {
                 _uiState.update { it.copy(error = "По этой группе уже идёт или завершена передача") }
                 return@launch
             }
@@ -464,7 +480,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             val email = auth.storedEmail() ?: return@launch
             val entry = runCatchingExceptCancellation { registry.groupById(email, entryId) }.getOrNull() ?: return@launch
-            if (entry.spreadsheetId == newId) return@launch
+            if (entry.role != "creator") {
+                _uiState.update { it.copy(error = "Завершить передачу может только создатель группы") }
+                return@launch
+            }
+            if (entry.spreadsheetId == newId) {
+                _uiState.update {
+                    it.copy(error = "Это id текущей таблицы — вставьте код новой копии от нового ведущего")
+                }
+                return@launch
+            }
+            // Код вставляют вручную: проверяем, что за ним действительно группа,
+            // иначе запись переключится на посторонний файл, а «Убрать прежнюю
+            // версию» предложит удалить рабочую таблицу.
+            if (repository.isGroupTable(newId).getOrNull() != true) {
+                _uiState.update {
+                    it.copy(error = "Это не таблица группы или у вас нет к ней доступа. Скопируйте код ещё раз")
+                }
+                return@launch
+            }
             val marker = repository.readTransferMarker(entry.spreadsheetId).getOrNull()
             if (marker?.newSpreadsheetId != null) {
                 _uiState.update { it.copy(error = "Передача уже завершена — ссылка больше не действует") }
@@ -567,41 +601,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
             repository.copySpreadsheetToMe(parsed.spreadsheetId)
                 .onSuccess { entry ->
-                    val existing = registry.findBySpreadsheetId(email, parsed.spreadsheetId)
-                    if (existing != null) {
-                        registry.replaceSpreadsheet(email, parsed.spreadsheetId) { e ->
-                            e.copy(
-                                spreadsheetId = entry.spreadsheetId,
-                                title = entry.title,
-                                spreadsheetUrl = entry.spreadsheetUrl,
-                                role = "creator",
-                                localTitle = null,
-                                unavailable = false,
-                            )
-                        }
-                    } else {
-                        registry.addGroup(email, entry)
-                    }
-                    // Перечитываем маркер: за время копирования передача могла завершиться
-                    // другим получателем. Первый записавший id копии — победитель.
+                    // Перечитываем маркер: за время копирования передачу мог забрать
+                    // другой получатель. Пока не убедились, что копия «наша», в реестр
+                    // её не пишем и на Диске не оставляем.
                     val fresh = repository.readTransferMarker(parsed.spreadsheetId).getOrNull()
                     val takenId = fresh?.newSpreadsheetId
-                    // Первый записавший id копии — победитель. Если приёмщик не может писать
-                    // в прежнюю таблицу (например, он лишь наблюдатель) — выдаём код завершения.
-                    val auto = if (takenId == null || takenId == entry.spreadsheetId) {
-                        repository.writeTransferDone(parsed.spreadsheetId, entry.spreadsheetId).isSuccess
-                    } else {
-                        false
-                    }
-                    _uiState.update { s ->
-                        s.copy(
-                            acceptBusy = false,
-                            acceptResult = AcceptTransferResult(
-                                autoFinalized = auto,
-                                newSpreadsheetId = entry.spreadsheetId,
-                                alreadyTransferredTo = if (auto) null else takenId,
-                            ),
-                        )
+                    when (decideTransferOutcome(takenId, entry.spreadsheetId)) {
+                        TransferOutcome.TAKEN_BY_OTHER -> {
+                            // Копия уже никому не нужна: удаляем, чтобы не плодить
+                            // осиротевшие файлы и не показывать группу в списке.
+                            repository.deleteFromDrive(entry.spreadsheetId)
+                            _uiState.update {
+                                it.copy(
+                                    acceptBusy = false,
+                                    error = "Группа уже передана другому ведущему — ссылка больше не действует",
+                                )
+                            }
+                        }
+
+                        TransferOutcome.CLAIM, TransferOutcome.ALREADY_OURS -> {
+                            val existing = registry.findBySpreadsheetId(email, parsed.spreadsheetId)
+                            if (existing != null) {
+                                registry.replaceSpreadsheet(email, parsed.spreadsheetId) { e ->
+                                    e.copy(
+                                        spreadsheetId = entry.spreadsheetId,
+                                        title = entry.title,
+                                        spreadsheetUrl = entry.spreadsheetUrl,
+                                        role = "creator",
+                                        localTitle = null,
+                                        unavailable = false,
+                                    )
+                                }
+                            } else {
+                                registry.addGroup(email, entry)
+                            }
+                            // Первый записавший id копии — победитель. Если записи нет
+                            // (например, приёмщик лишь наблюдатель) — покажем код
+                            // завершения, который нужно передать прежнему ведущему.
+                            val auto = repository.writeTransferDone(parsed.spreadsheetId, entry.spreadsheetId).isSuccess
+                            _uiState.update { s ->
+                                s.copy(
+                                    acceptBusy = false,
+                                    acceptResult = AcceptTransferResult(
+                                        autoFinalized = auto,
+                                        newSpreadsheetId = entry.spreadsheetId,
+                                    ),
+                                )
+                            }
+                        }
                     }
                 }
                 .onFailure { e ->
@@ -643,32 +690,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun consumeTransferJustCompleted() {
         _uiState.update { it.copy(transferJustCompleted = null) }
-    }
-
-    private data class TransferLinkParts(val spreadsheetId: String, val code: String)
-
-    private fun parseTransferLink(raw: String): TransferLinkParts? {
-        var s = raw.trim()
-        listOf(
-            "groupfund://transfer/",
-            "https://cheshirebat88.github.io/transfer/",
-            "http://cheshirebat88.github.io/transfer/",
-        ).forEach { if (s.startsWith(it)) s = s.removePrefix(it) }
-        val sid: String
-        val code: String
-        if (s.contains("?code=")) {
-            sid = s.substringBefore("?code=").trim()
-            code = s.substringAfter("?code=").trim()
-        } else if (s.contains("|")) {
-            sid = s.substringBefore("|").trim()
-            code = s.substringAfter("|").trim()
-        } else {
-            sid = s.trim()
-            code = ""
-        }
-        val validId = sid.matches(Regex("[A-Za-z0-9_-]{20,}"))
-        val validCode = code.matches(Regex("[A-Za-z0-9]{8}"))
-        return if (validId && validCode) TransferLinkParts(sid, code) else null
     }
 
     /** Ищет группы, созданные приложением, на Google Диске. */
